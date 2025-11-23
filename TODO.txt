@@ -1,0 +1,181 @@
+
+1. implement other fs functions and finish filesystem class + according os functions + commands
+2. simple file editor (edit command)
+3. implement other apis (date, time)
+4. create own programs or commands with custom simple programing language
+5. graphics library
+
+REALLY NEEDED
+- command stack (navigate to previous commands) -> done
+- randstring, randfloat -> done
+- auto completition !! -> done
+- protected files !!! extra command or flags for force deletion -> done (rmdirf, rmf)
+- file editor -> done
+- editor, syntax highlighting in run files -> done
+- file completition in subdir not working from outside the dir: tools/repair.run (no syntax highlighting)
+- run python maybe?
+- storing binary files!!!! later important if downloading files, images. base64 ? extra function for it? or storing everything as base64?
+
+!! finish programming language, integrate with os
+tasks:
+- improve wpl, improvment suggestions over code variable declaration
+- execute wpl files in extra view like text editor
+- graphics library
+- add modules to autoload, maybe store entry in fs: s for setting: s_autoload: [ m_wpl, m_fs, ...]
+- text editor: dont ask for save if no modification
+- update help
+- maybe add different help pages like: help modules, or for single commands like man pages on linux
+
+Finish Filesystem Layer
+
+Implement remaining FS functions (rename, move, permissions, links, etc.)
+
+Ensure proper error handling (e.g., disk full, file not found)
+
+Directory management (recursive creation, removal)
+
+Support for virtual files (like /dev, /proc, if relevant)
+
+
+Implement Core OS Functions + Shell Commands
+
+Map FS operations to shell commands (rm, mv, chmod, etc.)
+
+Add command-line feedback (return codes, messages)
+
+Logging system (basic logging or journaling)
+
+
+Text Editor
+
+Implement basic edit command with line editing or fullscreen UI (like nano)
+
+Include save/cancel functionality, basic navigation
+
+File viewer (cat, more, or less)
+
+
+Extend System APIs
+
+Date/time API (date, clock, sleep, uptime)
+
+Random number generator
+
+System info APIs (CPU usage, memory stats if tracked)
+
+
+Custom Programming Language / Scriptable Programs
+
+Basic interpreter (BASIC, stack-based like Forth, or Lisp-like)
+
+Scriptable shell command support
+
+Include functions to access FS, memory, IO
+
+
+Graphics Library
+
+Framebuffer abstraction (if applicable)
+
+Primitive drawing (lines, rectangles, text)
+
+
+Windowing system (very basic, if wanted)
+
+User and Permissions System
+
+User login, user switching (login, su)
+
+User data storage (/home/username)
+
+Basic permission model (read/write/execute + ownership)
+
+Groups (if not too complex)
+
+
+Process Management (Optional but Valuable)
+
+Simulated or real process/task management (multitasking, if applicable)
+
+Job control (background tasks, task switching)
+
+Task listing (ps, kill, etc.)
+
+
+Memory Management
+
+Basic heap or memory block tracking (if low-level memory ops exist)
+
+Memory protection (optional for higher realism)
+
+
+Device I/O System
+
+Abstraction for devices (keyboard, screen, storage)
+
+Support for reading/writing to devices via file-like interfaces
+
+Hotplug or detection simulation
+
+
+Bootstrapping & Configuration
+
+Config file parser (system config, shell profiles)
+
+Environment variables
+
+Startup script support (.profile, init)
+
+
+Networking Stack (if desired)
+
+Simulated sockets or message passing
+
+Ping, HTTP requests, file transfer
+
+
+Package System or Modular App Loader
+
+Installable programs
+
+Modular API for third-party apps
+
+
+Security Layers
+
+User access control
+
+Shell command restrictions
+
+Basic sandboxing (limiting program access)
+
+
+Documentation / Help System
+
+man command or help output per command
+
+In-OS documentation browser
+
+
+
+
+Best Order:
+
+Finalize Filesystem + FS Commands
+
+Add Users & Permissions
+
+Add APIs (time, random, etc.)
+
+Add Shell Enhancements & File Editor
+
+Add Process Model (if applicable)
+
+Custom Programming Language
+
+Graphics/Windowing or GUI-based tools
+
+Add Device I/O layer
+
+Networking and advanced services
+

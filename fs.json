@@ -1,0 +1,21 @@
+{
+    "root": {
+        "d_aDir": {
+            "d_testDir": {
+                "f_testfile": "aaa123",
+                "d_a": {}
+            },
+            "f_4444": "12121 21 312",
+            "f_hello.txt": "Hello\nWorld!\n123"
+        },
+        "d_bDir": {
+            "d_abc": {
+                "f_test": ""
+            },
+            "d_1234": {}
+        },
+        "f_.filesystem": "",
+        "f_hell.txt": "Hello, World!",
+        "f_hello212": "hellohellohellovvellohellohellohellohellohellohellohellov"
+    }
+}

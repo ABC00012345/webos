@@ -1,0 +1,1796 @@
+const terminal = document.getElementById('terminal');
+let currentInput = null;
+
+// GLOBALS
+let cwd = [];
+let cwdPath = "/";
+let commandStack = [];
+let historyPosition = -1;
+let currentInputBeforeHistory = '';
+let editViewOpened = false;
+let oldCwd = "/";
+
+// UTILS
+class Utils {
+    static helpMessage = `
+Hello, welcome to WebOS!
+
+This is a simple web-based operating system.
+
+Commands:
+- ls:     List files in the current directory
+- cd:     Change directory
+- cat:    Read file content
+- echo:   Print text to the terminal
+- mkdir:  Create a new directory
+- rmdir:  Remove a directory
+- rmdirf: Remove a directory (force)
+- rm:     Remove a file
+- rmf:    Remove a file (force)
+- touch:  Create a new file
+- pwd:    Print working directory
+- write:  Write to a file
+- mv:     Move or rename a file/directory
+- cp:     Copy a file/directory
+- exist:  Check if a file/directory exists
+- append: Append content to a file
+- load:   Load a module
+- loadall: Load all modules
+- unload: Unload a module
+- modinfo: Show loaded and available modules
+- help:   Show this help message
+- clear:  Clear the terminal
+- date:  Show current date and time
+- randint: Generate random numbers
+- randfloat: Generate random float numbers
+- randstring: Generate random alphanumeric strings
+- reboot: Reboot the system
+- exit: Shutdown the system
+- edit: File editor
+- history: Display command history
+
+More coming soon!!
+
+Enjoy your experience!
+`;
+}
+
+// DATE
+class DateUtils {
+    getCurrentDate() {
+        const date = new Date();
+        return date.toLocaleString();
+    }
+    getCurrentTime() {
+        const date = new Date();
+        return date.toLocaleTimeString();
+    }
+}
+
+// RANDOM
+class RandomUtils {
+    // Returns a random integer between min and max (inclusive)
+    getRandomInt(min, max) {
+        min = Math.ceil(min);
+        max = Math.floor(max);
+        if (min > max) [min, max] = [max, min];
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    // Returns a random float between min (inclusive) and max (exclusive)
+    getRandomFloat(min, max) {
+        if (min > max) [min, max] = [max, min];
+        return Math.random() * (max - min) + min;
+    }
+
+    // Returns a random alphanumeric string of the given length
+    getRandomString(length) {
+        length = parseInt(length);
+        if (length <= 0 || isNaN(length)) return '';
+        
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        
+        for (let i = 0; i < length; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        
+        return result;
+    }
+}
+
+// store modules here
+class Modules{
+    static moduleNotLoaded = "Module not loaded yet! Use load command to load the required module.";
+    static date = null;
+    static random = null;
+}
+
+// module loader
+class Loader {
+    // List of all modules to load/unload, including name and constructor
+    static moduleList = [
+        { name: "date", key: "date", classRef: DateUtils },
+        { name: "random", key: "random", classRef: RandomUtils }
+    ];
+
+    static systemModules = ["fs"];
+
+    static loadModule(moduleName) {
+        console.log("Loading module: " + moduleName);
+
+        if (this.systemModules.includes(moduleName)) {
+            return ["", false, "System modules cannot be loaded!"];
+        }
+
+        const mod = this.moduleList.find(m => m.name === moduleName);
+        if (!mod) {
+            return ["", false, `Module not found: ${moduleName}`];
+        }
+
+        Modules[mod.key] = new mod.classRef();
+        return ["", true, `Module loaded: ${moduleName}`];
+    }
+
+    static loadAllModules() {
+        console.log("Loading all modules...");
+
+        for (const mod of this.moduleList) {
+            const output = this.loadModule(mod.name);
+            if (!output[1]) return output;
+        }
+
+        return ["", true, "All modules loaded!"];
+    }
+
+    static unloadModule(moduleName) {
+        console.log("Unloading module: " + moduleName);
+
+        if (this.systemModules.includes(moduleName)) {
+            if (filesystem != null) {
+                filesystem = null;
+                return ["", true, "System module unloaded: fs"];
+            } else {
+                return ["", false, "System module not loaded!"];
+            }
+        }
+
+        const mod = this.moduleList.find(m => m.name === moduleName);
+        if (!mod) {
+            return ["", false, `Module not found: ${moduleName}`];
+        }
+
+        if (Modules[mod.key] != null) {
+            Modules[mod.key] = null;
+            return ["", true, `Module unloaded: ${moduleName}`];
+        } else {
+            return ["", false, "Module not loaded!"];
+        }
+    }
+
+    static getLoadedModules() {
+        const loaded = this.moduleList
+            .filter(mod => Modules[mod.key] != null)
+            .map(mod => mod.name);
+
+        if (filesystem != null) {
+            loaded.push("fs");
+        }
+
+        return loaded;
+    }
+    static getAllModules() {
+        return this.moduleList.map(mod => mod.name).concat(this.systemModules);
+    }
+}
+
+
+
+// CLASS FILESYSTEM
+class FS{
+    // moving protected files also to localstorage later
+    // note: protected files are only checked in remove dir and file function, maybe also checking in write functions
+    protectedFiles = [[".filesystem"], ["help.txt"], ["tools"]]; // paths are stored as arrays, so buildPath function doesn't need to be called
+    constructor(){
+        if(localStorage.getItem("fs") == null){
+            localStorage.setItem("fs", JSON.stringify({"root":{"f_.filesystem":""}}));
+        }
+        try {
+            this.filesystem = JSON.parse(localStorage.getItem("fs"));
+        } catch (e) {
+            console.error("Invalid JSON in localStorage:", e);
+            alert("Unrecoverable error: filesystem is corrupted. Press enter to reset.");
+            localStorage.setItem("fs", JSON.stringify({"root":{"f_.filesystem":""}}));
+            window.location.reload();
+            return;
+        }
+        
+        let output = this.readFile([".filesystem"]);
+        if(output[1] == false){
+            alert("Unrecoverable error: filesystem is corrupted. '.filesystem' file is missing. Press enter to recover!. Error message: "+output[2]);
+            output = this.createFile([".filesystem"], "");
+            //alert(output[2]);
+            window.location.reload();
+            return;
+
+        }
+
+        this.createEssentialFiles();
+
+    
+    }
+    createEssentialFiles(){
+        this.createDirectory(["tools"]);
+        this.writeFile(["help.txt"], Utils.helpMessage);
+        this.writeFile(["tools","repair.run"],"#script\necho Repairing filesystem...\nrm /.filesystem\ntouch /.filesystem\necho Repair complete!\n");
+    }
+    getRoot(){
+        return this.filesystem["root"];
+    }
+    // invalid paths need to be handled
+    readFile(path) {
+        let value = this.getRoot();
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            
+            // Determine if we are looking for a file (f_) or directory (d_)
+            let prefixedKey = `f_${key}`;  // Default to looking for files
+            if (i < path.length - 1) {  // If we're not at the end, we're still looking for directories or files
+                prefixedKey = `d_${key}`;  // Assume we're looking for a directory unless it's the last part
+            }
+    
+            // Check if the key exists at this level
+            if (value && value.hasOwnProperty(prefixedKey)) {
+                value = value[prefixedKey];
+                
+                // If it's a directory (d_), and we're at the end of the path, return that it's a directory
+                if (prefixedKey.startsWith("d_")) {
+                    if (i === path.length - 1) {
+                        return ["", false, `${"/"+path.join('/')} is a directory`];
+                    }
+                    continue;  // Proceed to next part of the path if it's a directory
+                }
+    
+                // If it's a file (f_), and we're at the end of the path, return its content
+                if (prefixedKey.startsWith("f_")) {
+                    if (i === path.length - 1) {
+                        return [value, true, ""];  // Successfully found the file content
+                    }
+                    continue;  // Proceed to next part of the path if it's a file
+                }
+            } else {
+                // If the key does not exist, return an error message
+                return ["", false, `Invalid path: ${"/"+path.join('/')}`];
+            }
+        }
+    
+        return ["", false, `Invalid path: ${"/"+path.join('/')}`];  // If no match found
+    }
+    buildPath(path){
+        return path.split("/").filter(item => item);
+    }
+    // function for checking if path is absolute or relative
+    parsePath(path) {
+        if (path == undefined || path == null) {
+            return cwd;
+        } else if (path.startsWith("/")) {
+            // Absolute path
+            return this.buildPath(path);
+        } else {
+            // Relative path
+            const parts = path.split("/").filter(p => p.length > 0);
+            const newPath = [...cwd];
+    
+            for (const part of parts) {
+                if (part === "..") {
+                    if (newPath.length > 0) {
+                        newPath.pop(); // Go up one directory
+                    }
+                } else if (part !== ".") {
+                    newPath.push(part); // Add normal path part
+                }
+            }
+    
+            return newPath;
+        }
+    }
+    updateFS(){
+        localStorage.setItem("fs", JSON.stringify(this.filesystem));
+    }
+    createFile(path, content) {
+        let value = this.getRoot();
+
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+    
+            // Determine if we are looking for a file (f_) or directory (d_)
+            let prefixedKey = `f_${key}`;  // Default to looking for files
+            if (i < path.length - 1) {  // If we're not at the end, we're still looking for directories or files
+                prefixedKey = `d_${key}`;  // Assume we're looking for a directory unless it's the last part
+            }
+    
+            // Check if the key exists at this level
+            if (value && value.hasOwnProperty(prefixedKey)) {
+                value = value[prefixedKey];
+                
+                // If it's a directory, continue to the next part of the path
+                if (prefixedKey.startsWith("d_")) {
+                    if (i === path.length - 1) {
+                        // If the path ends in a directory, return that it's a directory
+                        return ["", false, `${"/"+path.join('/')} is a directory, cannot create file here`];
+                    }
+                    continue;  // Proceed to next part of the path if it's a directory
+                }
+    
+                // If it's a file, we're trying to create a file where one already exists
+                if (prefixedKey.startsWith("f_")) {
+                    if (i === path.length - 1) {
+                        // The file already exists
+                        return ["", false, `File ${"/"+path.join('/')} already exists`];
+                    }
+                    continue;  // Proceed to next part of the path if it's a file
+                }
+            } else {
+                // If the key does not exist, create the directory or file at this level
+                if (prefixedKey.startsWith("d_")) {
+                    // If it's a directory, create it as a new object
+                    value[prefixedKey] = {};
+                    value = value[prefixedKey];
+                    //this.updateFS();
+                } else if (prefixedKey.startsWith("f_") && i === path.length - 1) {
+                    // If it's the last element in the path, create the file with content
+                    value[prefixedKey] = content;  // Create the file with content
+                    this.updateFS();
+                    return [content, true, ""];  // Successfully created the file // why returning content?? AI ?!?
+                } else {
+                    return ["", false, `Invalid path: ${"/"+path.join('/')}`];
+                }
+            }
+        }
+    
+        return ["", false, `Invalid path: ${"/"+path.join('/')}`];  // If we get here, it's invalid
+
+    }
+    createDirectory(path) {
+        let value = this.getRoot();
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let prefixedKey = `d_${key}`;  // Always creating or checking directories
+    
+            if (value.hasOwnProperty(prefixedKey)) {
+                // If it exists and is a directory, continue
+                if (typeof value[prefixedKey] === 'object') {
+                    value = value[prefixedKey];
+                    continue;
+                } else {
+                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
+                }
+            } else {
+                // Create directory
+                value[prefixedKey] = {};
+                value = value[prefixedKey];
+            }
+        }
+    
+        this.updateFS();
+        return ["",true, ""];  // Successfully created directory
+    }
+    deleteFile(path, force) {
+        let value = this.getRoot();
+        let parent = null;
+        let lastKey = null;
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let prefixedKey = i < path.length - 1 ? `d_${key}` : `f_${key}`;  // Use 'd_' for intermediate, 'f_' for final file
+    
+            if (value && value.hasOwnProperty(prefixedKey)) {
+                parent = value;         // Store the parent for deletion
+                lastKey = prefixedKey; // Store the key to delete
+                value = value[prefixedKey];
+    
+                if (i < path.length - 1 && !prefixedKey.startsWith("d_")) {
+                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
+                }
+            } else {
+                return ["",false, `Path ${"/"+path.join('/')} does not exist`];
+            }
+        }
+        
+        // protected check
+        const isProtected = this.protectedFiles.some(inner => JSON.stringify(inner) === JSON.stringify(path));
+
+        console.log("Deleting file: ", path);
+        console.log("Is protected: ", isProtected);
+        console.log("Force delete: ", force);
+        // Final check: is this a file?
+        if (lastKey && lastKey.startsWith("f_")) /* only delete protected files if force is set */ {
+            if(force || !isProtected){
+                delete parent[lastKey];
+                this.updateFS();
+                return ["",true, ""];
+            } else {
+                return ["",false, `File ${"/"+path.join('/')} is protected and cannot be deleted.`];
+            }
+        }
+    
+        return ["",false, `${"/"+path.join('/')} is a directory, not a file`];
+    }
+    deleteDirectory(path, force) {
+        let value = this.getRoot();
+        let parent = null;
+        let lastKey = null;
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let prefixedKey = `d_${key}`;  // Always expect directories for rmdir
+    
+            if (value && value.hasOwnProperty(prefixedKey)) {
+                parent = value;
+                lastKey = prefixedKey;
+                value = value[prefixedKey];
+    
+                if (typeof value !== 'object') {
+                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
+                }
+            } else {
+                return ["",false, `Directory ${"/"+path.join('/')} does not exist`];
+            }
+        }
+    
+        // Final check: is it empty?
+        /*if (Object.keys(value).length > 0) {
+            return ["",false, `Directory ${path.join('/')} is not empty`];
+        }*/ // function currently deletes even if not empty, maybe add a check for this later
+        
+        const isProtected = this.protectedFiles.some(inner => JSON.stringify(inner) === JSON.stringify(path));
+        if(force || !isProtected){
+            // Safe to delete
+            delete parent[lastKey];
+            this.updateFS();
+            return ["",true, ""];
+        } else {
+            return ["",false, `Directory ${path.join('/')} is protected and cannot be deleted.`];
+        }
+    }
+    listFiles(path) {
+        let value = this.getRoot();
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let dirKey = `d_${key}`;
+    
+            if (value.hasOwnProperty(dirKey)) {
+                value = value[dirKey];
+            } else {
+                return [[], false, `Invalid path: ${"/"+path.join('/')}`];
+            }
+        }
+    
+        if (typeof value !== 'object' || value === null) {
+            return [[], false, `${path.join('/')} is not a directory`];
+        }
+    
+        let entries = Object.keys(value).map(entry => {
+            if (entry.startsWith("d_")) return entry.slice(2) + '/'; // Add slash for directory
+            if (entry.startsWith("f_")) return entry.slice(2);
+            return entry;
+        });
+    
+        return [entries, true, ""];
+    }
+    readFile(path) {
+        let value = this.getRoot();
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let dirKey = `d_${key}`;
+            let fileKey = `f_${key}`;
+    
+            // If it's the last part of the path
+            if (i === path.length - 1) {
+                if (value.hasOwnProperty(fileKey)) {
+                    return [value[fileKey], true, ""];
+                } else if (value.hasOwnProperty(dirKey)) {
+                    return ["", false, `${"/"+path.join('/')} is a directory, not a file`];
+                } else {
+                    return ["", false, `File ${"/"+path.join('/')} does not exist`];
+                }
+            }
+    
+            // For intermediate segments, expect only directories
+            if (value.hasOwnProperty(dirKey)) {
+                value = value[dirKey];
+            } else {
+                return ["", false, `Invalid path: ${path.join('/')}`];
+            }
+        }
+    
+        return ["", false, `File ${"/"+path.join('/')} does not exist`]; // fallback
+    }
+    // similar to createFile, maybe merge them or remove support for adding content to files in createFile
+    writeFile(path, content) {
+        let value = this.getRoot();
+    
+        for (let i = 0; i < path.length; i++) {
+            let key = path[i];
+            let dirKey = `d_${key}`;
+            let fileKey = `f_${key}`;
+    
+            // If it's the last part of the path (the file name)
+            if (i === path.length - 1) {
+                if (value.hasOwnProperty(dirKey)) {
+                    return ["",false, `${"/"+path.join('/')} is a directory, not a file`];
+                }
+    
+                // Write or create the file
+                value[fileKey] = content;
+                this.updateFS();
+                return [true, ""];
+            }
+    
+            // Intermediate path segments must be directories
+            if (value.hasOwnProperty(dirKey)) {
+                value = value[dirKey];
+            } else {
+                return ["",false, `Invalid path: ${"/"+path.slice(0, i + 1).join('/')}`];
+            }
+        }
+    
+        return ["",false, `Unexpected error writing to ${"/"+path.join('/')}`]; // fallback
+    }
+    movePath(srcPath, destPath) {
+        let root = this.getRoot();
+    
+        // Handle the case where destination is the root (empty array)
+        if (destPath.length === 0) {
+            destPath = [];  // Destination is the root
+        }
+
+        if (JSON.stringify(srcPath) === JSON.stringify(destPath)) {
+            return ["", false, "Source and destination paths are the same!"];
+        }
+    
+        // Navigate to source parent
+        let srcParent = root;
+        for (let i = 0; i < srcPath.length - 1; i++) {
+            let dirKey = `d_${srcPath[i]}`;
+            if (srcParent.hasOwnProperty(dirKey)) {
+                srcParent = srcParent[dirKey];
+            } else {
+                return ["",false, `Invalid source path: /${srcPath.slice(0, i + 1).join('/')}`];
+            }
+        }
+    
+        let srcName = srcPath[srcPath.length - 1];
+        let srcFileKey = `f_${srcName}`;
+        let srcDirKey = `d_${srcName}`;
+    
+        let isFile = srcParent.hasOwnProperty(srcFileKey);
+        let isDir = srcParent.hasOwnProperty(srcDirKey);
+    
+        if (!isFile && !isDir) {
+            return ["",false, `Source not found: /${srcPath.join('/')}`];
+        }
+    
+        // Navigate to destination parent
+        let destParent = root;
+        if (destPath.length > 0) {  // If it's not the root directory
+            for (let i = 0; i < destPath.length - 1; i++) {
+                let dirKey = `d_${destPath[i]}`;
+                if (destParent.hasOwnProperty(dirKey)) {
+                    destParent = destParent[dirKey];
+                } else {
+                    return ["",false, `Invalid destination path: /${destPath.slice(0, i + 1).join('/')}`];
+                }
+            }
+        }
+    
+        let destName = destPath[destPath.length - 1];
+        let destDirKey = `d_${destName}`;
+        let destFileKey = `f_${destName}`;
+    
+        // Case: destination is an existing directory → move inside it
+        if (destParent.hasOwnProperty(destDirKey)) {
+            let destDir = destParent[destDirKey];
+            let targetKey = isFile ? `f_${srcName}` : `d_${srcName}`;
+            if (destDir.hasOwnProperty(targetKey)) {
+                return ["",false, `Destination already contains /${srcName}`];
+            }
+            destDir[targetKey] = isFile ? srcParent[srcFileKey] : srcParent[srcDirKey];
+            if (isFile) delete srcParent[srcFileKey];
+            else delete srcParent[srcDirKey];
+            this.updateFS();
+            return ["",true, "File moved successfully!"];
+        }
+    
+        // Case: destination is the root directory (destPath is empty)
+        if (destPath.length === 0) {
+            if (isFile) {
+                root[`f_${srcName}`] = srcParent[srcFileKey];
+                delete srcParent[srcFileKey];
+            } else {
+                root[`d_${srcName}`] = srcParent[srcDirKey];
+                delete srcParent[srcDirKey];
+            }
+            this.updateFS();
+            return ["",true, "File moved successfully to root!"];
+        }
+    
+        // Case: destination is new file or directory name (rename)
+        if (isFile) {
+            destParent[`f_${destName}`] = srcParent[srcFileKey];
+            delete srcParent[srcFileKey];
+        } else {
+            destParent[`d_${destName}`] = srcParent[srcDirKey];
+            delete srcParent[srcDirKey];
+        }
+    
+        this.updateFS();
+        return ["",true, "File moved successfully!"];
+    }
+    copyPath(srcPath, destPath) {
+        let root = this.getRoot();
+    
+        // Handle the case where destination is the root (empty array)
+        if (destPath.length === 0) {
+            destPath = [];  // Destination is the root
+        }
+    
+        if (JSON.stringify(srcPath) === JSON.stringify(destPath)) {
+            return ["", false, "Source and destination paths are the same!"];
+        }
+    
+        // Navigate to source parent
+        let srcParent = root;
+        for (let i = 0; i < srcPath.length - 1; i++) {
+            let dirKey = `d_${srcPath[i]}`;
+            if (srcParent.hasOwnProperty(dirKey)) {
+                srcParent = srcParent[dirKey];
+            } else {
+                return ["", false, `Invalid source path: /${srcPath.slice(0, i + 1).join('/')}`];
+            }
+        }
+    
+        let srcName = srcPath[srcPath.length - 1];
+        let srcFileKey = `f_${srcName}`;
+        let srcDirKey = `d_${srcName}`;
+    
+        let isFile = srcParent.hasOwnProperty(srcFileKey);
+        let isDir = srcParent.hasOwnProperty(srcDirKey);
+    
+        if (!isFile && !isDir) {
+            return ["", false, `Source not found: /${srcPath.join('/')}`];
+        }
+    
+        // Navigate to destination parent
+        let destParent = root;
+        if (destPath.length > 0) {  // If it's not the root directory
+            for (let i = 0; i < destPath.length - 1; i++) {
+                let dirKey = `d_${destPath[i]}`;
+                if (destParent.hasOwnProperty(dirKey)) {
+                    destParent = destParent[dirKey];
+                } else {
+                    return ["", false, `Invalid destination path: /${destPath.slice(0, i + 1).join('/')}`];
+                }
+            }
+        }
+    
+        let destName = destPath[destPath.length - 1];
+        let destDirKey = `d_${destName}`;
+        let destFileKey = `f_${destName}`;
+    
+        // Case: destination is an existing directory → copy inside it
+        if (destParent.hasOwnProperty(destDirKey)) {
+            let destDir = destParent[destDirKey];
+            let targetKey = isFile ? `f_${srcName}` : `d_${srcName}`;
+            if (destDir.hasOwnProperty(targetKey)) {
+                return ["", false, `Destination already contains /${srcName}`];
+            }
+    
+            // Copy file or directory
+            if (isFile) {
+                // For files, copy the content directly (not as an object)
+                destDir[targetKey] = srcParent[srcFileKey];
+            } else {
+                // For directories, do a deep copy
+                destDir[targetKey] = JSON.parse(JSON.stringify(srcParent[srcDirKey]));
+            }
+            this.updateFS();
+            return ["", true, "File copied successfully!"];
+        }
+    
+        // Case: destination is the root directory (destPath is empty)
+        if (destPath.length === 0) {
+            if (isFile) {
+                root[`f_${srcName}`] = srcParent[srcFileKey]; // Copy the file content directly
+            } else {
+                root[`d_${srcName}`] = JSON.parse(JSON.stringify(srcParent[srcDirKey])); // Deep copy directory
+            }
+            this.updateFS();
+            return ["", true, "File copied successfully to root!"];
+        }
+    
+        // Case: destination is new file or directory name (rename)
+        if (isFile) {
+            destParent[`f_${destName}`] = srcParent[srcFileKey]; // Copy file content directly
+        } else {
+            destParent[`d_${destName}`] = JSON.parse(JSON.stringify(srcParent[srcDirKey])); // Deep copy directory
+        }
+    
+        this.updateFS();
+        return ["", true, "File copied successfully!"];
+    }
+    
+    
+    
+}
+
+
+class OsCalls{
+    // kernel panic for mssinh filesystem module
+    panicMessage10FS = "Kernel panic. Filesystem module not loaded! Auto reboot in 10s";
+    // fixed:
+    // :/ ls command can only be used to list in directories but not on files, maybe this will be changed in the future. but this also requires changing the cd function then if listFiles changes to also list files, because cd function depends on it, maybe function related callsbacks as 4th argument for return value?
+    // file operation os calls are used to parse the full path which is then passed to the FS class which reads/writes content from/to the file with abs path
+    listfiles(path){
+        console.log("Listing files in path: ", path);
+
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+        
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.listFiles(parsed_path);
+        let entries = output[0];
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [entries.join(" "),true,""];
+        }
+        
+    }
+    probeFSModule(){
+        return filesystem != null;
+    }
+    panicInstant(){
+        window.location.reload();
+    }
+    panic10(){
+        setTimeout( () => {
+            window.location.reload();
+        },10000)
+    }
+    createFile(path, content){
+        console.log("Creating file");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+        
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.createFile(parsed_path, content); // need to be modified to list current dir if cwd and cd is implemented
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    deleteFile(path, force){
+        console.log("Deleting file");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+        
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.deleteFile(parsed_path, force); // need to be modified to list current dir if cwd and cd is implemented
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    createDir(path){
+        console.log("Creating directory");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.createDirectory(parsed_path);
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    deleteDir(path, force){
+        console.log("Deleting directory");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.deleteDirectory(parsed_path, force);
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    readFile(path){
+        console.log("Reading file");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.readFile(parsed_path);
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    // similar to createFile, maybe merge them or remove support for adding content to files in createFile
+    writeFile(path, content){
+        console.log("Writing file");
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath(path);
+        let output = filesystem.writeFile(parsed_path, content.replace(/\\n/g, "\n"));
+        if(output[1] == false){
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    parsePathWrapper(path){
+        let parsed_path = filesystem.parsePath(path);
+        return parsed_path;
+    }
+    movePath(srcPath, destPath) {
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_srcPath = filesystem.parsePath(srcPath);
+        let parsed_destPath = filesystem.parsePath(destPath);
+        console.log('Source Path:', parsed_srcPath);
+        console.log('Destination Path:', parsed_destPath);
+        let output = filesystem.movePath(parsed_srcPath, parsed_destPath);
+        if (output[1] == false) {
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    copyPath(srcPath, destPath) {
+
+        if(!this.probeFSModule){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_srcPath = filesystem.parsePath(srcPath);
+        let parsed_destPath = filesystem.parsePath(destPath);
+        console.log('Source Path:', parsed_srcPath);
+        console.log('Destination Path:', parsed_destPath);
+        let output = filesystem.copyPath(parsed_srcPath, parsed_destPath);
+        if (output[1] == false) {
+            return ["", false, output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+
+}
+
+class Commands{
+    ls(args){
+        let output = OS.listfiles(args[0]); // first arg is path
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return [output[0], "green", ""];
+        }
+
+    }
+
+    cd(args){
+
+        if(!OS.probeFSModule()){
+            OS.panic10();
+            return ["", false, OS.panicMessage10FS]
+        }
+
+        // normally filesystem class function should only be called from OsCalls class (Kernel)
+        let parsed_path = OS.parsePathWrapper(args[0]);
+        let output = filesystem.listFiles(parsed_path);
+        if(output[1] == false){
+            return ["Directory does't exist!", "red", ""];
+        }
+        cwd = parsed_path;
+
+        // !!! cwdPath shouldnt be used, it is only used for displaying the current path in the terminal
+
+        cwdPath = cwd.join("/");
+        cwdPath = "/"+cwdPath;
+        // if changing directory to root, then cwdPath is empty, so return /
+        return ["Current directory => "+cwdPath, "green", ""];
+    }
+    touch(args){
+        let output = OS.createFile(args[0],"");
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return ["File created successfully!", "green", ""];
+        }
+    }
+    rm(args, force=false){
+        if (args.length === 0) {
+            return ["Usage: rm <files>", "yellow", ""];
+        }
+
+        let outputMessage = '';  // Initialize an empty string to store messages
+
+        args.forEach(file => {
+            const result = OS.deleteFile(file,force);
+            
+            if (result[1] === false) {
+                outputMessage += `Error deleting ${file}: ${result[2]}\n`;  // Append error message
+                return;  // Stop processing further files on error
+            } else {
+                outputMessage += `${file} deleted successfully!\n`;  // Append success message
+            }
+        });
+
+        // If there were any errors, return the error message string
+        if (outputMessage.includes("Error")) {
+            return [outputMessage, "red", ""];
+        }
+
+        // If all deletions were successful, return the success message
+        return [outputMessage, "green", ""];
+    }
+    rmf(args){
+        if(args.length === 0){
+            return ["Usage: rmf <files>", "yellow", ""];
+        }
+        return this.rm(args, true);
+    }
+    pwd(args){
+        // cwdPath should be used here, because it is the current path
+        return ["Current directory => "+cwdPath, "green", ""];
+    }
+    mkdir(args){
+        let output = OS.createDir(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return ["Directory created successfully!", "green", ""];
+        }
+    }
+    rmdir(args, force=false) {
+        if (args.length === 0) {
+            return ["Usage: rmdir <dirs>", "yellow", ""];
+        }
+    
+        let outputMessage = '';  // Initialize an empty string to store messages
+    
+        args.forEach(dir => {
+            const result = OS.deleteDir(dir, force);
+            
+            if (result[1] === false) {
+                outputMessage += `Error deleting directory ${dir}: ${result[2]}\n`;  // Append error message
+                return;  // Stop processing further directories on error
+            } else {
+                outputMessage += `${dir} directory deleted successfully!\n`;  // Append success message
+            }
+        });
+    
+        // If there were any errors, return the error message string
+        if (outputMessage.includes("Error")) {
+            return [outputMessage, "red", ""];
+        }
+    
+        // If all deletions were successful, return the success message
+        return [outputMessage, "green", ""];
+    }
+    rmdirf(args){
+        if(args.length === 0){
+            return ["Usage: rmdirf <dirs>", "yellow", ""];
+        }
+        return this.rmdir(args, true);
+    }
+    cat(args){
+        // this should read the file and return the content
+        let output = OS.readFile(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return [output[0], "green", ""];
+        }
+    }
+    write(args){
+        // this should write the file and return the content
+        if (!args[0] || args.length < 2) {
+            return ["Usage: write <filename> <content>", "yellow", ""];
+        }
+        
+        let filename = args[0];
+        let content = args.slice(1).join(" "); // combine all other args as content
+        //console.log("Writing to file: ", filename, " with content: ", content);
+
+        let exists = OS.listfiles(args[0]);
+        if(exists[1] == true){
+            return ["Cannot write to a directory!", "red", ""];
+        }
+        
+        let output = OS.writeFile(filename, content);
+        
+        if (output[0] === false) {
+            return [output[1], "red", ""];
+        } else {
+            return ["File written successfully!", "green", ""];
+        }
+    }
+    echo(args){
+        // this should write the file and return the content
+        if (!args[0]) {
+            return ["Usage: echo <content>", "yellow", ""];
+        }
+        return [args.join(" "), "green", ""];
+
+    }
+    mv(args){
+        // this should move the file and return the content
+        if (args.length < 2) {
+            return ["Usage: mv <source> <destination>", "yellow", ""];
+        }
+        
+        let src = args[0];
+        let dest = args[1];
+        
+        let output = OS.movePath(src, dest);
+        
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            return ["File moved successfully!", "green", ""];
+        }
+    }
+    cp(args){
+        // this should copy the file and return the content
+        if (args.length < 2) {
+            return ["Usage: cp <source> <destination>", "yellow", ""];
+        }
+        
+        let src = args[0];
+        let dest = args[1];
+        
+        let output = OS.copyPath(src, dest);
+        
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            return ["File copied successfully!", "green", ""];
+        }
+    }
+    exist(args) {
+        if (!args[0]) {
+            return ["Usage: exist <path>", "yellow", ""];
+        }
+    
+        // Check if it's a file
+        let output = OS.readFile(args[0]);
+        if (output[1]) {
+            return ["true", "green", ""];
+        }
+    
+        // Check if it's a directory
+        output = OS.listfiles(args[0]);
+        if (output[1]) {
+            return ["true", "green", ""];
+        }
+    
+        return ["false", "green", ""];
+    }
+    append(args){
+        // this should write the file and return the content
+        if (!args[0] || args.length < 2) {
+            return ["Usage: append <filename> <content>", "yellow", ""];
+        }
+        
+        let filename = args[0];
+        let content = args.slice(1).join(" "); // combine all other args as content
+        //console.log("Writing to file: ", filename, " with content: ", content);
+
+        let exists = OS.readFile(args[0]);
+        if(exists[1] == false){
+            return [exists[2], "red", ""];
+        }
+
+        let curContent = OS.readFile(filename);
+        
+        let output = OS.writeFile(filename, curContent[0]+content);
+        
+        if (output[0] === false) {
+            return [output[1], "red", ""];
+        } else {
+            return ["File written successfully!", "green", ""];
+        }
+    }
+    run(args){
+        // this should run the file and return the content
+        if (!args[0]) {
+            return ["Usage: run <filename>", "yellow", ""];
+        }
+        let filename = args[0];
+        let output = OS.readFile(filename);
+
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        }
+
+        // executable files need to have '#script' in the first line
+        if(output[0].split("\n")[0] !== "#script"){
+            return ["File is not executable!", "red", ""];
+        }
+        
+        
+        // run the file
+        let lines = output[0].split("\n");
+        for (let i = 1; i < lines.length; i++) {
+            let line = lines[i];
+            let result = commandManager.executeCommand(line);
+            if (result) {
+                // Display output if any
+                const outputLine = document.createElement('div');
+                outputLine.classList.add('output-line');
+                outputLine.textContent = result[0];
+                outputLine.style.color = result[1];
+                terminal.appendChild(outputLine);
+            }
+        }
+        return ["File executed successfully!", "green", ""];
+        
+    }
+    load(args){
+        // mdoule loader
+        if (!args[0]) {
+            return ["Usage: load <module>", "yellow", ""];
+        }
+
+        let output = Loader.loadModule(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return ["Module loaded successfully!", "green", ""];
+        }
+    }
+    loadAll(args){
+        // mdoule loader
+
+        let output = Loader.loadAllModules();
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return [output[2], "green", ""]; // All modules loaded!
+        }
+    }
+    unload(args){
+        // mdoule loader
+        if (!args[0]) {
+            return ["Usage: unload <module>", "yellow", ""];
+        }
+        let output = Loader.unloadModule(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        }
+        return ["Module unloaded successfully!", "green", ""];
+    }
+    date(args){
+        if(!Modules.date){
+            return [Modules.moduleNotLoaded+" Module needed: date", "red", ""];
+        }
+        let output = Modules.date.getCurrentDate(args[0]);
+        return [output, "green", ""];
+    }
+    randint(args){ 
+        if(!Modules.random){
+            return [Modules.moduleNotLoaded+" Module needed: random", "red", ""];
+        }
+        if(args.length < 2){
+            return ["Usage: randint <min> <max>", "yellow", ""];
+        }
+        if(isNaN(args[0]) || isNaN(args[1])){
+            return ["Arguments must be numbers!", "red", ""];
+        }
+        let output = Modules.random.getRandomInt(args[0], args[1]);
+        return [output, "green", ""];
+    }
+    randfloat(args){  
+        if(!Modules.random){
+            return [Modules.moduleNotLoaded+" Module needed: random", "red", ""];
+        }
+        if(args.length < 2){
+            return ["Usage: randfloat <min> <max>", "yellow", ""];
+        }
+        if(isNaN(args[0]) || isNaN(args[1])){
+            return ["Arguments must be numbers!", "red", ""];
+        }
+        let output = Modules.random.getRandomFloat(args[0], args[1]);
+        return [output, "green", ""];
+    }
+    randstring(args){
+        if(!Modules.random){
+            return [Modules.moduleNotLoaded+" Module needed: random", "red", ""];
+        }
+        if(!args[0]){
+            return ["Usage: randstring <length>", "yellow", ""];
+        }
+        if(isNaN(args[0])){
+            return ["Length must be a number!", "red", ""];
+        }
+        let output = Modules.random.getRandomString(args[0]);
+        return [output, "green", ""];
+    }
+    help(args){
+        return [Utils.helpMessage, "green", ""];
+    }
+    modinfo(args){
+        let loadedModules = Loader.getLoadedModules();
+        let allModules = Loader.getAllModules();
+        return ["All modules:\n   "+allModules.join("\n   ")+"\nLoaded modules:\n   "+loadedModules.join("\n   "), "green", ""];
+    }
+    reboot(args){
+        // this should reboot the system
+        // maybe add a confirmation dialog
+        let timeout;
+        if(!args[0]){
+            timeout = 0;
+        } else if(isNaN(args[0])){
+                return ["Time must be a number!", "red", ""];
+        } else {
+            timeout = args[0];
+        }
+        setTimeout(() => {
+            window.location.reload();
+        }, timeout*1000);
+        return ["Rebooting in "+timeout+" seconds ...", "green", ""];
+    }
+    exit(args){
+        // this should exit the system
+        // maybe add a confirmation dialog
+        let timeout;
+        if(!args[0]){
+            timeout = 0;
+        } else if(isNaN(args[0])){
+                return ["Time must be a number!", "red", ""];
+        } else {
+            timeout = args[0];
+        }
+        setTimeout(() => {
+            window.close();
+        }, timeout*1000);
+        return ["Exiting in "+timeout+" seconds ...", "green", ""];
+    }
+    edit(args){
+        // this should open the file in edit mode
+        if (!args[0]) {
+            return ["Usage: edit <filename>", "yellow", ""];
+        }
+        let filename = args[0];
+        let parsed_filename = filesystem.parsePath(filename)
+        let output = OS.readFile(filename);
+        // check if direcory, if it is, this returns true, so dont continue, if target doesnt exist at all, thenn readFile fails
+        let entries = filesystem.listFiles(parsed_filename);
+
+        // open the file in edit mode
+        if(entries[1]){ // is a dir
+            return [args[0]+" is a directory!","red",""]
+        } else if (output[1] == false) {
+            editView(filename, "", true); // newfile
+        } else {
+            editView(filename, output[0], false);
+        }
+        
+        editViewOpened = true;
+        return ["File opened in edit mode!", "green", ""];
+    }
+    history(args){
+        return [commandStack.join("\n"),"green"]
+    }
+    
+
+    // ...
+}
+
+let filesystem = new FS();
+let OS = new OsCalls();
+let commands = new Commands();
+// date/random,.. other modules are initalized by load command
+
+// CLASS COMMANDMANAGER
+class CommandManager {
+
+    constructor() {
+        this.availableCommands = {
+            clear: "",
+            help: commands.help,
+            ls: commands.ls,
+            cd: commands.cd,
+            cat: commands.cat,
+            echo: commands.echo,
+            mkdir: commands.mkdir,
+            rmdir: commands.rmdir,
+            rmdirf: commands.rmdirf,
+            rm: commands.rm,
+            rmf: commands.rmf,
+            touch: commands.touch,
+            pwd: commands.pwd,
+            write: commands.write,
+            mv: commands.mv,
+            cp: commands.cp,
+            exist: commands.exist,
+            append: commands.append,
+            run: commands.run,
+            date: commands.date,
+            load: commands.load,
+            randint: commands.randint,
+            randfloat: commands.randfloat,
+            randstring: commands.randstring,
+            loadall: commands.loadAll,
+            unload: commands.unload,
+            modinfo: commands.modinfo,
+            reboot: commands.reboot,
+            exit: commands.exit,
+            edit: commands.edit,
+            history: commands.history,
+        };
+    }
+
+    commandNotFound(command){
+        const message = `Command not found: ${command}`;
+        return message;
+    }
+    
+    
+    executeCommand(cmd) {
+
+        // return:
+        // [output, color, other_evets_handled_directly]
+
+        cmd = cmd.trim();
+
+        let command = cmd.split(' ')[0];
+        const args = cmd.split(' ').slice(1);
+
+        if(command=="clear"){
+            return ["","","clear"];
+        } else if (command in this.availableCommands) {
+            return this.availableCommands[command](args);
+        } else {
+            if(command!=""){
+                return [this.commandNotFound(command), "red",""];
+            }
+        }
+    }
+}
+
+
+
+
+
+
+let commandManager = new CommandManager();
+
+let inputDiv;
+function createInputLine() {
+    const line = document.createElement('div');
+    line.classList.add('input-line');
+    line.innerHTML = `( ${cwdPath} ) >> `;
+  
+    // Create contenteditable "input" area
+    inputDiv = document.createElement('div');
+    inputDiv.classList.add('cli-input-editable');
+    inputDiv.contentEditable = true;
+    inputDiv.style.display = 'inline-block';
+    inputDiv.style.minWidth = '10px'; // Allows shrinking
+    line.appendChild(inputDiv);
+    terminal.appendChild(line);
+    inputDiv.focus();
+
+    // auto completition stuff
+    let curCmdAutoCompletIndex = 0;
+    let cmdMatch;
+    let curCmdInput = "";
+
+    // extra function to remove the event listener before function gets called again!!
+    function eventListener(event){
+        if (event.key === 'Enter' && !event.shiftKey && !editViewOpened) {
+            event.preventDefault();
+            // scroll to bottom to avoid weird auto scroll issues
+            window.scrollTo(0, document.body.scrollHeight);
+
+            const command = inputDiv.innerText.trim();
+
+            // go to latest command in history
+            historyPosition = -1;
+
+            if(command && command != commandStack[commandStack.length - 1]){ // command should not be empty
+                commandStack.push(command); // Add command to stack
+            }
+
+            // Process command
+            const output = commandManager.executeCommand(command);
+            
+            if(!editViewOpened){
+                // Display the entered command (with formatting)
+                line.innerText = `( ${oldCwd} ) >> ${command}`;
+
+                // this is very important, soif switching directories, the line where cd was entered stays the old dir
+                oldCwd=cwdPath;
+                
+                // Display output if any
+                if (output) {
+                    // some commands handled here directly
+                    if(output[2] == "clear"){
+                        terminal.innerHTML = "";
+                    } else {
+                        const outputLine = document.createElement('div');
+                        outputLine.classList.add('output-line');
+                        outputLine.textContent = output[0];
+                        outputLine.style.color = output[1];
+                        terminal.appendChild(outputLine);
+                    }
+                }
+
+
+                window.scrollTo(0, document.body.scrollHeight);
+                document.removeEventListener('keydown',eventListener)
+                document.removeEventListener('keydown',inputEvent)
+                createInputLine();
+
+            }
+        } if (event.key === 'ArrowUp') {
+            event.preventDefault();
+    
+            if (commandStack.length === 0) return;
+    
+            if (historyPosition === -1) {
+                // Save the input before history scroll begins
+                currentInputBeforeHistory = inputDiv.innerText.trim();
+            }
+    
+            if (historyPosition < commandStack.length - 1) {
+                historyPosition++;
+                inputDiv.innerText = commandStack[commandStack.length - 1 - historyPosition];
+                moveCursorToEnd(inputDiv);
+            }
+
+            // adjust width for div
+            inputDiv.style.width = 'auto';
+            inputDiv.style.width = (inputDiv.scrollWidth+2) + 'px';
+        }
+    
+        // Navigate down through history
+        else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+    
+            if (historyPosition === -1) return;
+    
+            if (historyPosition > 0) {
+                historyPosition--;
+                inputDiv.innerText = commandStack[commandStack.length - 1 - historyPosition];
+            } else {
+                // Reset to the original input before navigating
+                historyPosition = -1;
+                inputDiv.innerText = currentInputBeforeHistory;
+            }
+            
+            moveCursorToEnd(inputDiv);
+
+            inputDiv.style.width = 'auto';
+            inputDiv.style.width = (inputDiv.scrollWidth+2) + 'px';
+        }
+        /// auto completition need to be added
+        else if (event.key === 'Tab') {
+            event.preventDefault();
+    
+            let cmdMatch = [];
+    
+            const parts = inputDiv.textContent.split(" ");
+            if (parts.length < 2) {
+                // command completion
+                cmdMatch = Object.keys(commandManager.availableCommands)
+                    .filter(key => key.startsWith(curCmdInput));
+            } else {
+                // file/folder completion
+                const [entries, ok] = filesystem.listFiles(cwd);
+                if (ok) {
+                    cmdMatch = entries
+                        .filter(name => name.startsWith(curCmdInput));
+                }
+            }
+    
+            if (cmdMatch.length > 0) {
+                // advance index
+                curCmdAutoCompleteIndex = (curCmdAutoCompleteIndex + 1) % cmdMatch.length;
+    
+                if (parts.length < 2) {
+                    // replace entire command
+                    inputDiv.textContent = cmdMatch[curCmdAutoCompleteIndex];
+                } else {
+                    // replace only the second part
+                    inputDiv.textContent = parts[0] + " " + cmdMatch[curCmdAutoCompleteIndex];
+                }
+    
+                // resize and move cursor // why not using the moveCursorToEnd function?!
+                inputDiv.style.width = 'auto';
+                inputDiv.style.width = (inputDiv.scrollWidth + 2) + 'px';
+                const range = document.createRange();
+                range.selectNodeContents(inputDiv);
+                range.collapse(false);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        }
+    }
+  
+    // Handle keyboard input
+    inputDiv.addEventListener('keydown', eventListener);
+
+    // input div resize + auto completition stuff
+    function inputEvent(event) {
+        // Resize
+        this.style.width = 'auto';
+        this.style.width = (this.scrollWidth + 2) + 'px';
+    
+        if (!["Tab","Enter","ArrowUp","ArrowDown"].includes(event.key)) {
+            const parts = this.textContent.split(" ");
+            if (parts.length < 2) {
+                // typing command
+                curCmdInput = parts[0] || "";
+            } else {
+                // typing argument
+                curCmdInput = parts[1];
+            }
+            // Reset autocomplete index when input changes
+            curCmdAutoCompleteIndex = -1;
+        }
+    }
+  
+    // Auto-expand width as user types
+    inputDiv.addEventListener('input', inputEvent);
+}
+
+// maybe moving this to the top?
+let syntaxHighLighting = {
+    run: {
+      blue: ["#script"],
+      green: [
+        "clear", "help", "ls", "cd", "cat", "echo", "mkdir", "rmdir", 
+        "rmdirf", "rm", "rmf", "touch", "pwd", "write", "mv", "cp", 
+        "exist", "append", "run", "date", "load", "randint", "randfloat", 
+        "randstring", "loadall", "unload", "modinfo", "reboot", "exit", 
+        "edit", "history"
+    ],
+    }
+};
+  
+function syntaxHighlight(inputDiv, extension) {
+    // 1) save caret position as character offset
+    const caretOffset = getCaretCharacterOffsetWithin(inputDiv);
+
+    // 2) build highlighted HTML
+    let text = inputDiv.innerText;
+    if (!syntaxHighLighting[extension]) return;
+    Object.entries(syntaxHighLighting[extension]).forEach(([color, parts]) => {
+        parts.forEach(part => {
+        const esc = part.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+        const re = new RegExp(`(${esc})`, "g");
+        text = text.replace(re, `<span style="color:${color}">$1</span>`);
+        });
+    });
+
+    // 3) update the div
+    inputDiv.innerHTML = text;
+
+    // 4) restore caret
+    setCaretToPosition(inputDiv, caretOffset);
+}
+
+
+function getCaretCharacterOffsetWithin(el) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return 0;
+
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(el);
+    range.setEnd(sel.focusNode, sel.focusOffset);
+    return range.toString().length;
+}
+
+/**
+ * Given a character offset, walk the text-nodes of `el` to re-place
+ * the caret at that offset.
+ */
+function setCaretToPosition(el, chars) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    let nodeStack = [el], node, charCount = 0, found = false;
+
+    range.setStart(el, 0);
+    range.collapse(true);
+
+    while (nodeStack.length && !found) {
+        node = nodeStack.pop();
+        if (node.nodeType === 3) { // text node
+            const nextCount = charCount + node.length;
+            if (chars <= nextCount) {
+                range.setStart(node, chars - charCount);
+                range.collapse(true);
+                found = true;
+            } else {
+                charCount = nextCount;
+            }
+        } else {
+            // push children in reverse so we traverse in document order
+            for (let i = node.childNodes.length - 1; i >= 0; i--) {
+                nodeStack.push(node.childNodes[i]);
+            }
+        }
+    }
+
+    if (!found) {
+        // if offset past end, put at end
+        range.setStart(el, el.childNodes.length);
+        range.collapse(true);
+    }
+
+    sel.removeAllRanges();
+    sel.addRange(range);
+}
+
+
+function editView(filename, fileContent, newFile=false) {
+    terminal.innerHTML = "";
+
+    let saveLine;
+
+    let extension = filename.split(".")[filename.split(".").length-1];
+
+    const title = document.createElement('h1');
+    title.classList.add('editViewTitle');
+    title.textContent = "Filename: " + filename + (newFile ? " (new file)" : "");
+    terminal.appendChild(title);
+
+    const line = document.createElement('div');
+    line.classList.add('input-line');
+
+    const inputDiv = document.createElement('div');
+    inputDiv.classList.add('cli-input-editable');
+    inputDiv.contentEditable = true;
+    inputDiv.style.display = 'inline-block';
+    inputDiv.style.minWidth = '10px';
+    inputDiv.innerText = fileContent;
+    line.appendChild(inputDiv);
+    terminal.appendChild(line);
+    inputDiv.focus();
+
+    let savePromptShown = false;
+
+    function savePromptListener(event) {
+        const key = event.key.toLowerCase();
+        if (!savePromptShown) return;
+
+        if (key === 'y') {
+            event.preventDefault();
+            commands.write([filename, inputDiv.innerText]);
+
+            cleanup();
+        } else if (key === 'n') {
+            event.preventDefault();
+            cleanup();
+        } else if (key === 'escape') {
+            event.preventDefault();
+            saveLine.remove();
+            inputDiv.contentEditable = true;
+            inputDiv.focus();
+            savePromptShown = false;
+        }
+    }
+
+    function cleanup() {
+        terminal.innerHTML = "";
+        document.removeEventListener('keydown', exitEditViewCtrlXListener);
+        document.removeEventListener('keydown', savePromptListener);
+        document.removeEventListener('input',callSyntaxHighlight)
+        editViewOpened = false;
+        createInputLine();
+    }
+
+    const exitEditViewCtrlXListener = function(event) {
+        if (event.ctrlKey && event.key.toLowerCase() === 'x' && editViewOpened) {
+            event.preventDefault();
+
+            inputDiv.contentEditable = false;
+
+            saveLine = document.createElement('h2');
+            saveLine.textContent = "Save file? Y/N";
+            saveLine.classList.add('saveLine');
+            terminal.appendChild(saveLine);
+
+            savePromptShown = true;
+
+            document.addEventListener('keydown', savePromptListener);
+        }
+    };
+
+    function callSyntaxHighlight(event){
+        syntaxHighlight(inputDiv, extension);
+    }
+
+    document.addEventListener('input', callSyntaxHighlight)
+
+    document.addEventListener('keydown', exitEditViewCtrlXListener);
+
+    // call syntax highlight for the first time
+    syntaxHighlight(inputDiv, extension);
+}
+
+
+
+function moveCursorToEnd(element) {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+
+function getCommonPrefix(strings) {
+    if (!strings || strings.length === 0) return '';
+    let prefix = strings[0];
+    for (let i = 1; i < strings.length; i++) {
+        while (strings[i].indexOf(prefix) !== 0) {
+            prefix = prefix.substring(0, prefix.length - 1);
+            if (prefix === '') return '';
+        }
+    }
+    return prefix;
+}
+
+// Ensure input is always focused if the user clicks elsewhere
+document.addEventListener('click', (event) => {
+    // Only focus if click was outside the input
+    if (!event.target.closest('.cli-input-editable')) {
+        // Focus the input
+        inputDiv.focus();
+    }
+});
+
+// Initialize the first input line
+createInputLine();

@@ -1,0 +1,90 @@
+body {
+    background-color: #111;
+    color: white;
+    font-family: 'Open Sans';
+    padding: 20px;
+    margin-bottom: 30px;
+}
+
+#terminal {
+    white-space: pre-wrap;
+}
+
+.cli-input-editable {
+    background: transparent;
+    border: none;
+    color: white;
+    font: inherit;
+    font-size: 25px;
+    outline: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: inline-block;
+    min-width: 10px;
+    /* Simulate input field appearance */
+    /*border-bottom: 1px solid #333;*/
+    caret-color: white;
+}
+
+/*line num - */
+/*
+.editor-container {
+    display: flex;
+    font-family: monospace;
+}
+
+.line-numbers {
+    padding: 5px 10px;
+    text-align: right;
+    border-right: 1px solid #ccc;
+    user-select: none;
+    font-size: 25px;
+}
+
+.cli-input-editable {
+    padding: 5px 10px;
+    white-space: pre;
+    flex: 1;
+    outline: none;
+}
+*/
+/* - line num*/
+
+.entered-command {
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: inline-block;
+}
+
+.input-line {
+    display: block;
+    font-size: 25px;
+    white-space: pre-wrap;
+    margin-bottom: 2px;
+    word-break: break-word;
+}
+
+
+
+.output-line {
+    color: #0f0;
+    margin-left: 10px;
+    white-space: pre-wrap;
+    font-size: 25px;
+    word-break: break-word;
+}
+
+.editViewTitle {
+    text-align: center;
+}
+
+.saveLine {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    text-align: center; /* Optional: center the text */
+    background-color: gray; /* Optional: background for visibility */
+    padding: 10px 0; /* Optional: spacing */
+    z-index: 1000; /* Optional: ensure it's above other elements */
+}
