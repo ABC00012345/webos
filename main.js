@@ -249,6 +249,7 @@ class WebOSPLang {
         this.globalOutput = "";
         this.globLine;
         this.outputDirectly = false;
+        this.setInterruptExecutionFlag = this.setInterruptExecutionFlag.bind(this);
         this.initCmds();
     }
 
@@ -268,11 +269,22 @@ class WebOSPLang {
         this.outputDirectly = outputDirectly;
         this.error = false;
         this.errorDesc = "";
+        this.interruptExecution = false;
+        this.errorAlreadyReported = false;
+        document.addEventListener('keydown', this.setInterruptExecutionFlag);
         const lines = code.split("\n").map(l => l.trim()).filter(l => l.length > 0);
         let [out] = await this.executeBlock(lines, 0);
         console.log(this.vars);
         console.log(this.functions);
+        document.removeEventListener('keydown', this.setInterruptExecutionFlag);
         return this.globalOutput;
+    }
+
+    setInterruptExecutionFlag(){
+        if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+            console.log("INTERRUPT");
+            this.interruptExecution = true;
+        }
     }
 
     // ----- MAIN BLOCK EXECUTION -----
@@ -289,6 +301,10 @@ class WebOSPLang {
             console.log("LINE: "+line);
             if(!isFunctionBody){ this.globLine = i+1};
             console.log("Line: "+this.globLine+ (isFunctionBody ? " (Inside Function)":""));
+
+            if (this.interruptExecution) {
+                break;
+            }
 
             if (line.startsWith("LET ")) {
                 await this.handleLet(line);
@@ -318,6 +334,17 @@ class WebOSPLang {
                 i = skipTo;
                 continue;
             }
+            else if (line.startsWith("WHILE ")) {
+                const [out, skipTo] = await this.handleWhile(lines, i);
+                
+                
+                i = skipTo;
+                continue;
+            }
+            else if (line.startsWith("ITER ")) {
+                i = await this.handleLoop(lines, i);
+                continue;
+            }
             else if (line.startsWith("FUNCTION ")) {
                 i = this.handleFunction(lines, i);
                 continue;
@@ -342,11 +369,16 @@ class WebOSPLang {
 
             i++;
         }
-        if(this.error){
+        if(this.interruptExecution){
+            this.throwError("(ERR: Execution interrupted by user)");
+        }
+        // this flag is needed, otherwise it would print the error multiple times cuz of recursion: executeBlock is called multiple times for example inside loops,functions,...
+        if(this.error && !this.errorAlreadyReported){
             this.globalOutput = this.errorDesc + "\n";
             if(this.outputDirectly){
                 this.outputToTerminalImmediately(this.errorDesc + "\n", "red");
             }
+            this.errorAlreadyReported = true;
         }
         //this.globalOutput+=output;
         return [output, i, returnValue];
@@ -471,6 +503,10 @@ class WebOSPLang {
                         
                         resolve(""); // Empty input on escape
                     }
+                }
+                else if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+                    this.interruptExecution = true;
+                    resolve();
                 }
             };
 
@@ -809,6 +845,171 @@ class WebOSPLang {
         }
     }
 
+    async handleWhile(lines, start) {
+        const conditionLine = lines[start];
+        const condPart = conditionLine.replace(/^WHILE\s+/, "").replace(/\s+START$/, "");
+        
+        // Read the while loop body with proper nesting support
+        let whileBlock = [];
+        let i = start + 1;
+        let depth = 0; // Track nested structures
+        
+        while (i < lines.length) {
+            const line = lines[i];
+            
+            // Check for nested structures (WHILE, IF, ITER, etc.)
+            if (line.startsWith("WHILE ") || line.startsWith("IF ") || line.startsWith("ITER ")) {
+                depth++;
+            }
+            
+            // Check for END statements
+            if (line === "END") {
+                if (depth > 0) {
+                    // This END closes a nested structure
+                    depth--;
+                } else {
+                    // This END closes our current WHILE loop
+                    break;
+                }
+            }
+            
+            whileBlock.push(line);
+            i++;
+        }
+        
+        // Now execute the while loop
+        let iterations = 0;
+        //// IMPORTANT: maybe we add later a setting that can be defined like: #maxIter 10000000 at top of the file
+        const maxIterations = 10000; // Safety limit to prevent infinite loops
+        
+        while (iterations < maxIterations && !this.interruptExecution) {
+            // Evaluate the condition each iteration
+            const condValue = this._evaluateExpression(condPart);
+            
+            console.log("While condition:", condPart, "=", condValue, "TYPE:", typeof condValue);
+            
+            // render frame, also important for ctrl-c to work
+            // maybe do after every x milliseconds to avoid overload
+            await new Promise(requestAnimationFrame);
+
+            // Break if condition is false
+            if (condValue !== true) {
+                break;
+            }
+            
+            // Execute the loop body
+            const [out, nextIndex, returnValue] = await this.executeBlock(whileBlock, 0);
+            
+            // Check for errors or early returns
+            if (this.hasError) {
+                break;
+            }
+            
+            // If there was a RETURN in the loop body (in function context)
+            if (returnValue !== null) {
+                // Handle return from function
+                return [out, i, returnValue];
+            }
+            
+            iterations++;
+            
+            // Safety check - prevent infinite loops
+            if (iterations >= maxIterations) {
+                this.throwError("(ERR: While loop iteration limit exceeded)");
+                break;
+            }
+        }
+        
+        console.log("While loop completed after", iterations, "iterations");
+        
+        // Skip the END line
+        return ["", i + 1, null];
+    }
+
+    // loop: ITER 1 TO 10 START
+    async handleLoop(lines, start){
+        const loopLine = lines[start];
+        const match = loopLine.match(/^ITER\s+(.+?)\s+TO\s+(.+?)\s+WITH\s+(\w+)$/);
+    
+        if (!match) {
+            this.throwError("(ERR: Invalid ITER syntax. Use: ITER start TO end WITH variable)");
+            return start;
+        }
+
+        // also evaluate expr, cuz start or end index could be defined variables
+        const iter_start = this.evalExpr(match[1], true);  // 1 (start value)
+        const iter_end = this.evalExpr(match[2], true);;    // 10 (end value)  
+        const iterator = match[3];         // i (iterator variable name)
+
+        if (typeof iter_start !== "number" || typeof iter_end !== "number") {
+            this.throwError("(ERR: Issue in ITER: start or end index isn't a number)");
+            return start;
+        }
+
+        console.log("ITER start:", iter_start, "end:", iter_end, "WITH:", iterator);
+        
+        let i = start + 1;
+        let body = [];
+        while (i < lines.length && lines[i] !== "END") {
+            body.push(lines[i]);
+            i++;
+        }
+        //console.log(body);
+
+        // somehow doesnt work. but doesnt matter
+        /*if(this.vars[iterator]){
+            this.throwError("(ERR: Iterator variable already defined!)")
+            return;
+        }*/
+
+        // !!! scope was removed, because variables cant be set inside loop, they get overwritten at the end,
+        // but this is still not a good scope hanbdling, cuz if you define a single variable in a loop you shouldnt be able to read it. but for now its okay, there is no try..catch, or other stuff
+        // IMPORTANT INFO: loop needs own scope because of iterator variable!
+
+        // Save current scope
+        //const oldVars = { ...this.vars };
+        
+        // Create new scope
+        //const loopVars = { ...oldVars };
+
+        // set iterator to start
+        //loopVars[iterator] = iter_start;
+        this.vars[iterator] = iter_start;
+
+        // Switch to function scope
+        //this.vars = loopVars;
+
+
+        // execute every iteration
+        for(let curI=iter_start;curI<iter_end;curI++){
+            if(this.interruptExecution){
+                break;
+            }
+            // render frame, also important for ctrl-c to work
+            // maybe do after every x milliseconds to avoid overload
+            await new Promise(requestAnimationFrame);
+            // and update iterator value
+            //loopVars[iterator] = curI;
+            //this.vars = loopVars;
+            this.vars[iterator] = curI;
+            const [out] = await this.executeBlock(body, 0);
+        }
+
+        // restore scope
+        //this.vars = oldVars;
+
+        /*return {
+            iter_start: iter_start,
+            iter_end: iter_end,
+            iterator: iterator
+        };*/
+        return i;
+    }
+    
+    throwError(desc){
+        this.error = true;
+        this.errorDesc = desc;
+    }
 
     // ----- FUNCTION DECL -----
     handleFunction(lines, start) {
@@ -820,8 +1021,7 @@ class WebOSPLang {
         const match = header.match(/FUNCTION\s+(\w+)(?:\s+PARAM\s+(.+))?\s+START/);
         if (!match) {
             console.error("Invalid function declaration:", header);
-            this.error = true;
-            this.errorDesc = "CRITICAL ERROR (cannot continue!): Invalid function declaration!";
+            this.throwError("CRITICAL ERROR (cannot continue!): Invalid function declaration!");
             // if continuing here and returning start, the hanbdleFunction function will be called all over again because the executeBlock function stucks at this index with the invalid function header
             return start; // or handle error appropriately
         }
@@ -969,6 +1169,15 @@ END
 
 LET RES = EXEC ls /
 PRINT "RES: " RES
+
+ITER 1 TO 10 WITH I
+    PRINT "loop: " I
+END
+
+LET I = 0
+WHILE I < 1000 START
+	PRINT "while: " I
+END
 `;
 
 
@@ -2368,9 +2577,12 @@ class Commands{
 
         console.log(wplout);
 
-        // output already done directly inside interpreter
-        return ["File executed successfully!"/*wplout*/, "green", ""];
-        
+        if(!Modules.wpl.error){
+            // output already done directly inside interpreter
+            return ["File executed successfully!"/*wplout*/, "green", ""];
+        } else {
+            return ["File executed with errors!", "red", ""];
+        }
     }
 
     // ...
@@ -2566,10 +2778,6 @@ function createInputLine() {
                 }
 
             }
-        } else if(event.ctrlKey && event.key.toLowerCase() === 'c'){
-            console.log("Terminating ...");
-            // in case if cancel func defined (only for async commands like ping)
-            cancelFunction();
         } else if (event.key === 'ArrowUp') {
             event.preventDefault();
             
@@ -2679,9 +2887,18 @@ function createInputLine() {
             }
         }
     }
-  
+
+    function interruptExecEvListener(event){
+        if(event.ctrlKey && event.key.toLowerCase() === 'c'){
+            console.log("Terminating ...");
+            // in case if cancel func defined (only for async commands like ping)
+            cancelFunction();
+        }
+    }
+
     // Handle keyboard input
     inputDiv.addEventListener('keydown', eventListener);
+    window.addEventListener('keydown', interruptExecEvListener);
 
     // input div resize + auto completition stuff
     function inputEvent(event) {
@@ -2722,7 +2939,7 @@ let syntaxHighLighting = {
     wpl: {
       blue: ["#wpl"],
       green: [
-        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START","END","CALL","WITH","IF","ELSE","THEN","EXEC"
+        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START","END","CALL","WITH","IF","ELSE","THEN","EXEC","ITER"," TO ", "WHILE "
       ],
     }
 };

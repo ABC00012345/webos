@@ -21,11 +21,18 @@ tasks:
 - improve wpl, improvment suggestions over code variable declaration
 - execute wpl files in extra view like text editor
 - graphics library
-- add modules to autoload, maybe store entry in fs: s for setting: s_autoload: [ m_wpl, m_fs, ...]
-- text editor: dont ask for save if no modification
-- update help
+- done: add modules to autoload, maybe store entry in fs: s for setting: s_autoload: [ m_wpl, m_fs, ...]
+- done: text editor: dont ask for save if no modification
+- done: partially: update help
 - maybe add different help pages like: help modules, or for single commands like man pages on linux
-- terminate running wpl programs
+- done: terminate running wpl programs -> works
+- programming language is slow, maybe because of all the logs and for every print adding it to the div
+- fix: because of all the function calls, logs, and prints in while loop for example, it updates DOM every iteration. maybe check every few iteration for ctrl-c (and update DOM not every time print is called, hard to check, maybe with timing, only update after a specific time)
+- inconsistency!!!: maybe add START to ITER
+- loop control: add step maybe: ITER 10 TO 1 STEP 2 WITH I START
+- add break, continue to loop
+- add lists
+add inc, dec command for simple integer manipulation instead of LET X = X+1
 
 Finish Filesystem Layer
 
