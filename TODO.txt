@@ -25,6 +25,7 @@ tasks:
 - text editor: dont ask for save if no modification
 - update help
 - maybe add different help pages like: help modules, or for single commands like man pages on linux
+- terminate running wpl programs
 
 Finish Filesystem Layer
 

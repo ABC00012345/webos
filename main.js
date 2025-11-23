@@ -1,5 +1,6 @@
 const terminal = document.getElementById('terminal');
 let currentInput = null;
+let line = null;
 
 // GLOBALS
 let cwd = [];
@@ -50,6 +51,7 @@ Commands:
 - history: Display command history
 - ping: Ping a host
 - fetch: Save response data of server to file
+- run: executes a script
 - wpl: executes a file of the webos programming language
 
 Important information:
@@ -246,6 +248,7 @@ class WebOSPLang {
         this.execHandler = execHandler; // optional integration with WebOS commands
         this.globalOutput = "";
         this.globLine;
+        this.outputDirectly = false;
         this.initCmds();
     }
 
@@ -257,11 +260,14 @@ class WebOSPLang {
 
     }
 
-    async run(code) {
+    async run(code, outputDirectly = false) {
         //console.log("CALLLEDDD!!!!"+code)
         this.vars = {};
         this.functions = {};
         this.globalOutput = ""
+        this.outputDirectly = outputDirectly;
+        this.error = false;
+        this.errorDesc = "";
         const lines = code.split("\n").map(l => l.trim()).filter(l => l.length > 0);
         let [out] = await this.executeBlock(lines, 0);
         console.log(this.vars);
@@ -277,7 +283,7 @@ class WebOSPLang {
         let returnValue = null;
         let hasReturned = false;
 
-        while (i < lines.length && !hasReturned) {
+        while (i < lines.length && !hasReturned && !this.error) {
             const line = lines[i];
 
             console.log("LINE: "+line);
@@ -293,6 +299,15 @@ class WebOSPLang {
                 console.log("Adding to output: "+out);
                 //output += out + "\n";
                 this.globalOutput+=out + "\n";
+
+                if(this.outputDirectly){
+                    // IMMEDIATE OUTPUT TO TERMINAL
+                    this.outputToTerminalImmediately(out);
+                }
+            }
+            // input until enter pressed
+            else if (line.startsWith("INPUT ")) {
+                await this.handleInput(line);
             }
             else if (line.startsWith("IF ")) {
                 const [out, skipTo] = await this.handleIf(lines, i);
@@ -327,8 +342,171 @@ class WebOSPLang {
 
             i++;
         }
+        if(this.error){
+            this.globalOutput = this.errorDesc + "\n";
+            if(this.outputDirectly){
+                this.outputToTerminalImmediately(this.errorDesc + "\n", "red");
+            }
+        }
         //this.globalOutput+=output;
         return [output, i, returnValue];
+    }
+
+    async handleInput(line) {
+        const match = line.match(/INPUT\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid INPUT syntax)");
+            return;
+        }
+
+        const promptExpr = match[1].trim();
+        let prompt = "";
+        
+        // Evaluate prompt expression if provided
+        if (promptExpr) {
+            prompt = this.evalExpr(promptExpr, false);
+        }
+
+        // Show prompt immediately
+        if (prompt) {
+            console.log(prompt.replace("\n",""));
+            this.outputToTerminalImmediately(prompt.replace("\n","")/*no newline!!!*/);
+        }
+
+        try {
+            // Wait for user input
+            const userInput = await this.waitForUserInput();
+            return userInput;
+            // Store input in a special variable or return it
+            // For now, we'll store it in a special _INPUT variable
+            //this.vars["_INPUT"] = userInput;
+            
+            // Also output the input (optional - mimics terminal behavior)
+            //this.outputToTerminalImmediately(userInput);
+            
+        } catch (error) {
+            this.throwError("(ERR: Input cancelled)");
+        }
+    }
+
+    waitForUserInput(prompt = "") {
+        return new Promise((resolve) => {
+            const terminal = document.getElementById('terminal');
+            
+            // Find the last output line to append input to
+            const outputLines = terminal.querySelectorAll('.output-line');
+            const lastOutputLine = outputLines[outputLines.length - 1];
+            
+            let inputContainer;
+            
+            if (lastOutputLine && !prompt) {
+                // If there's a previous output line and no prompt, append input to it
+                inputContainer = lastOutputLine;
+                
+                // Add a space before the input
+                const space = document.createTextNode(' ');
+                inputContainer.appendChild(space);
+            } else {
+                // Create a new line for input (with prompt if provided)
+                inputContainer = document.createElement('div');
+                inputContainer.classList.add('output-line');
+                
+                if (prompt) {
+                    const promptSpan = document.createElement('span');
+                    promptSpan.textContent = prompt;
+                    promptSpan.style.color = "green"; // Match your output color
+                    inputContainer.appendChild(promptSpan);
+                }
+                
+                terminal.appendChild(inputContainer);
+            }
+            
+            // Create the input div
+            const inputDiv = document.createElement('div');
+            inputDiv.classList.add('cli-input-editable', 'wpl-input', 'inline-input');
+            inputDiv.contentEditable = true;
+            inputDiv.style.display = 'inline-block';
+            inputDiv.style.minWidth = '10px';
+            inputDiv.style.color = 'green'; // for now we'll just use green like the rest
+            //inputDiv.style.border = '1px solid #ccc'; // Visual indicator
+            //inputDiv.style.padding = '2px 4px';
+            //inputDiv.style.marginLeft = '4px';
+            
+            inputContainer.appendChild(inputDiv);
+            inputDiv.focus();
+
+            let inputText = "";
+            let isResolved = false;
+
+            const handleKeyDown = (event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    
+                    if (!isResolved) {
+                        isResolved = true;
+                        const finalInput = inputDiv.innerText.trim();
+                        
+                        // Clean up event listeners
+                        inputDiv.removeEventListener('keydown', handleKeyDown);
+                        inputDiv.removeEventListener('input', handleInput);
+                        
+                        // Make input non-editable but keep it visible
+                        inputDiv.contentEditable = false;
+                        inputDiv.style.border = 'none';
+                        inputDiv.style.backgroundColor = 'transparent';
+                        
+                        resolve(finalInput);
+                    }
+                }
+                else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    
+                    if (!isResolved) {
+                        isResolved = true;
+                        
+                        // Clean up
+                        inputDiv.removeEventListener('keydown', handleKeyDown);
+                        inputDiv.removeEventListener('input', handleInput);
+                        inputContainer.removeChild(inputDiv);
+                        
+                        resolve(""); // Empty input on escape
+                    }
+                }
+            };
+
+            const handleInput = () => {
+                // Auto-resize
+                inputDiv.style.width = 'auto';
+                inputDiv.style.width = (inputDiv.scrollWidth + 2) + 'px';
+                
+                // Store current input
+                inputText = inputDiv.innerText;
+            };
+
+            inputDiv.addEventListener('keydown', handleKeyDown);
+            inputDiv.addEventListener('input', handleInput);
+
+            // Auto-resize initially
+            setTimeout(() => {
+                inputDiv.style.width = 'auto';
+                inputDiv.style.width = (inputDiv.scrollWidth + 2) + 'px';
+            }, 0);
+        });
+    }
+
+    outputToTerminalImmediately(text, col = "green") {
+        // Create and append output line directly to terminal
+        const outputLine = document.createElement('div');
+        outputLine.classList.add('output-line');
+        outputLine.textContent = text;
+        outputLine.style.color = col; // or whatever color you prefer
+        
+        // Get the terminal element
+        const terminal = document.getElementById('terminal');
+        terminal.appendChild(outputLine);
+        
+        // Scroll to bottom to show new output
+        window.scrollTo(0, document.body.scrollHeight);
     }
 
     // ----- LET -----
@@ -353,6 +531,11 @@ class WebOSPLang {
             let res = await this.handleExec(expr);
             console.log("RES: "+res);
             this.vars[name] = res;
+        }
+        else if (expr.startsWith("INPUT ")) {
+            let userInput = await this.handleInput(expr);
+            //console.log(out);
+            this.vars[name] = userInput;
         }
         else {
             this.vars[name] = this.evalExpr(expr, true);
@@ -630,8 +813,23 @@ class WebOSPLang {
     // ----- FUNCTION DECL -----
     handleFunction(lines, start) {
         const header = lines[start];
-        const [, name, params] =
-            header.match(/FUNCTION\s+(\w+)\s+PARAM\s+(.+)\s+START/);
+
+
+        
+        // Updated regex to make PARAM part optional
+        const match = header.match(/FUNCTION\s+(\w+)(?:\s+PARAM\s+(.+))?\s+START/);
+        if (!match) {
+            console.error("Invalid function declaration:", header);
+            this.error = true;
+            this.errorDesc = "CRITICAL ERROR (cannot continue!): Invalid function declaration!";
+            // if continuing here and returning start, the hanbdleFunction function will be called all over again because the executeBlock function stucks at this index with the invalid function header
+            return start; // or handle error appropriately
+        }
+
+        const name = match[1];
+        const params = match[2] ? match[2].split(",").map(s => s.trim()) : [];
+
+        console.log("Name: " + name, "Params: " + params);
 
         let i = start + 1;
         let body = [];
@@ -642,7 +840,7 @@ class WebOSPLang {
         }
 
         this.functions[name] = {
-            params: params.split(",").map(s => s.trim()),
+            params: params,
             body
         };
 
@@ -651,27 +849,29 @@ class WebOSPLang {
 
     // ----- CALL Add WITH A,B -----
     async handleCall(line) {
-        const match = line.match(/CALL\s+(\w+)\s+WITH\s+(.+)/);
+        const match = line.match(/CALL\s+(\w+)(?:\s+WITH\s+(.+))?/);
         if (!match) return;
 
         const name = match[1];
-        const args = match[2].split(",").map(a => a.trim());
+        const args = match[2] ? match[2].split(",").map(a => a.trim()) : [];
         const fn = this.functions[name];
 
-        console.log("FUNC: NAME "+name+" ARGS "+args);
+        console.log("FUNC: NAME " + name + " ARGS " + args);
 
         if (!fn) return "(ERR: Function not found)";
 
-        console.log("fnc: " + fn.params.length +" argc: "+ args.length)
-        if(fn.params.length != args.length) return "(ERR: Incorrect count of argument passed)";
+        // Check parameter count only if function has parameters defined
+        if (fn.params.length !== args.length) {
+            return "(ERR: Incorrect count of arguments passed)";
+        }
 
         // Save current scope
         const oldVars = { ...this.vars };
         
         // Create new scope with function parameters
-        const functionVars = { ...oldVars }; // Inherit global scope
+        const functionVars = { ...oldVars };
         
-        // Set parameters in function scope
+        // Set parameters in function scope (only if there are parameters)
         fn.params.forEach((param, index) => {
             functionVars[param] = this.evalExpr(args[index], true);
         });
@@ -682,11 +882,9 @@ class WebOSPLang {
         let returnValue = null;
 
         try {
-            // Execute function body using executeBlock with function context
             const [output, nextIndex, funcReturnValue] = await this.executeBlock(fn.body, 0, true);
             returnValue = funcReturnValue;
-            //this.globalOutput+=output;
-            console.log("Out: "+output+" nI: "+nextIndex+" rv: "+funcReturnValue);
+            console.log("Out: " + output + " nI: " + nextIndex + " rv: " + funcReturnValue);
         } finally {
             // Always restore original scope
             this.vars = oldVars;
@@ -2166,11 +2364,12 @@ class Commands{
         let wplcode = output[0].slice(1);
         
         // for now execute directly
-        let wplout = await Modules.wpl.run(wplcode);
+        let wplout = await Modules.wpl.run(wplcode, true);
 
         console.log(wplout);
 
-        return [wplout, "green", ""];
+        // output already done directly inside interpreter
+        return ["File executed successfully!"/*wplout*/, "green", ""];
         
     }
 
@@ -2274,7 +2473,7 @@ console.log("TEST: "+test);
 
 let inputDiv;
 function createInputLine() {
-    const line = document.createElement('div');
+    line = document.createElement('div');
     line.classList.add('input-line');
     line.innerHTML = `( ${cwdPath} ) >> `;
   
@@ -2523,8 +2722,8 @@ let syntaxHighLighting = {
     wpl: {
       blue: ["#wpl"],
       green: [
-        "LET","PRINT","FUNCTION","PARAM","RETURN","START","END","CALL","WITH","IF","ELSE","THEN","EXEC"
-    ],
+        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START","END","CALL","WITH","IF","ELSE","THEN","EXEC"
+      ],
     }
 };
 
@@ -2630,6 +2829,7 @@ function editView(filename, fileContent, newFile=false) {
     inputDiv.focus();
 
     let savePromptShown = false;
+    let modified = false;
 
     function savePromptListener(event) {
         const key = event.key.toLowerCase();
@@ -2658,6 +2858,7 @@ function editView(filename, fileContent, newFile=false) {
         document.removeEventListener('keydown', savePromptListener);
         document.removeEventListener('input',callSyntaxHighlight)
         editViewOpened = false;
+        modified = false;
         createInputLine();
     }
 
@@ -2686,16 +2887,22 @@ function editView(filename, fileContent, newFile=false) {
         if (event.ctrlKey && event.key.toLowerCase() === 'x' && editViewOpened) {
             event.preventDefault();
 
+            
             inputDiv.contentEditable = false;
 
-            saveLine = document.createElement('h2');
-            saveLine.textContent = "Save file? Y/N";
-            saveLine.classList.add('saveLine');
-            terminal.appendChild(saveLine);
+            if(modified){
+                saveLine = document.createElement('h2');
+                saveLine.textContent = "Save file? Y/N";
+                saveLine.classList.add('saveLine');
+                terminal.appendChild(saveLine);
 
-            savePromptShown = true;
+                savePromptShown = true;
 
-            document.addEventListener('keydown', savePromptListener);
+                document.addEventListener('keydown', savePromptListener);
+            } else {
+                // if nor modified, cleanup directly
+                cleanup();
+            }
         }
         
         /* normally this should be here, but its important. otherwise TAB doesnt work */
@@ -2707,6 +2914,7 @@ function editView(filename, fileContent, newFile=false) {
     };
 
     function callSyntaxHighlight(event){
+        modified = true; // normally shouldnt be here
         syntaxHighlight(inputDiv, extension);
     }
 
