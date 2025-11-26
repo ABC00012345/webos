@@ -11,6 +11,9 @@ let currentInputBeforeHistory = '';
 let editViewOpened = false;
 let oldCwd = "/";
 
+// disable console.log, improves speed by like 10x, espec. in wpl
+//console.log = function() {}
+
 // UTILS
 class Utils {
     static helpMessage = `
@@ -640,8 +643,9 @@ class WebOSPLang {
             return;
         }
 
+        /// ALL THESE METHODS WERE MOVED TO evalExpr !
         // access list element
-        if (expr.includes(" AT ")) {
+        /*if (expr.includes(" AT ")) {
             const atMatch = expr.match(/(\w+)\s+AT\s+(.+)/);
             if (atMatch) {
                 const listName = atMatch[1];
@@ -710,7 +714,7 @@ class WebOSPLang {
                 console.log("Checked IN:", name, "=", this.vars[name]);
                 return;
             }
-        }
+        }*/
 
         if (expr.startsWith("CALL ")) {
             let out = await this.handleCall(expr);
@@ -957,7 +961,7 @@ class WebOSPLang {
 
 
 
-    //
+    // need to handle lists in expressions. dont treat them like variables, for example for PRINT: PRINT LST should print the list like this (1,2,3) ...
 
     // ----- EXPRESSION EVALUATOR -----
     evalExpr(expr, raw = false) {
@@ -988,9 +992,101 @@ class WebOSPLang {
         // Handle booleans
         if (expr === 'true') return true;
         if (expr === 'false') return false;
+
+        expr = this._expandListOperations(expr);
         
         // Handle complex expressions with variables and operators
         return this._evaluateComplexExpression(expr);
+    }
+
+    // maybe also add function calls to expr like variables
+
+    _expandListOperations(expr) {
+        let expanded = expr;
+        
+        // 1. Handle FIND first (before plain IN)
+        // FIND <value> IN <listname> → returns index or -1
+        expanded = expanded.replace(/FIND\s+(.+?)\s+IN\s+(\w+)/g, (match, valueExpr, listName) => {
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return '-1';
+            }
+            
+            // Recursively evaluate the value expression
+            const value = this._evaluateExpression(valueExpr.trim());
+            return this.vars[listName].indexOf(value).toString();
+        });
+        
+        // 2. Handle LENGTH
+        // LENGTH <listname> → returns number
+        expanded = expanded.replace(/LENGTH\s+(\w+)/g, (match, listName) => {
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return '0';
+            }
+            return this.vars[listName].length.toString();
+        });
+        
+        // 3. Handle AT access
+        // <listname> AT <index> → returns value
+        // Note: This regex matches simple indices. For complex expressions like "I+1", 
+        // you'd need more sophisticated parsing
+        expanded = expanded.replace(/(\w+)\s+AT\s+([\w\d\-+\*\/\(\)]+)/g, (match, listName, indexExpr) => {
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return 'null';
+            }
+            
+            // Recursively evaluate the index expression
+            const index = this._evaluateExpression(indexExpr.trim());
+            
+            if (typeof index !== 'number') {
+                this.throwError(`(ERR: Index must be a number)`);
+                return 'null';
+            }
+            
+            const list = this.vars[listName];
+            const actualIndex = index < 0 ? list.length + index : index;
+            
+            if (actualIndex < 0 || actualIndex >= list.length) {
+                this.throwError(`(ERR: Index ${index} out of bounds for list ${listName})`);
+                return 'null';
+            }
+            
+            const value = list[actualIndex];
+            
+            // Return value in a format safe for eval
+            if (typeof value === 'string') {
+                // Escape quotes in the string
+                return `"${value.replace(/"/g, '\\"')}"`;
+            } else if (typeof value === 'boolean') {
+                return value.toString();
+            } else if (value === null || value === undefined) {
+                return 'null';
+            }
+            return value.toString();
+        });
+        
+        // 4. Handle IN checks (after FIND to avoid conflicts)
+        // <value> IN <listname> → returns boolean
+        // This is tricky because we need to match the value part carefully
+        // We'll use a simpler regex and handle it carefully
+        expanded = expanded.replace(/(.+?)\s+IN\s+(\w+)/g, (match, valueExpr, listName) => {
+            // Skip if this was part of a FIND expression (already handled)
+            if (valueExpr.trim().startsWith('FIND')) {
+                return match; // Return unchanged
+            }
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return 'false';
+            }
+            
+            const value = this._evaluateExpression(valueExpr.trim());
+            return this.vars[listName].includes(value).toString();
+        });
+        
+        return expanded;
     }
 
     // Helper function to evaluate complex expressions
@@ -2581,6 +2677,7 @@ class OsCalls{
         }
     }
 
+    // ntb implemented: add autoload command (+ e.g.:unautoload)
     autoLoadMod(modname){
         console.log("Autoload module");
 

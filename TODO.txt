@@ -42,7 +42,8 @@ add inc, dec command for simple integer manipulation instead of LET X = X+1
 - LIST AT
 - LENGTH LIST
 - FIND
-- move all the above handling to handleExpr
+- move all the above handling to handleExpr: done
+- also add lists to expressions, so they work for e.g.: print
 
 - def add at some point:
 string functions: SPLIT, JOIN, SUBSTR, toUpper
