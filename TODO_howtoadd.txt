@@ -1,0 +1,79 @@
+add various functions to evalExpr:
+
+_expandListOperations(expr) {
+    let expanded = expr;
+    
+    // 1. Handle LENGTH operation
+    // Match: LENGTH <listname>
+    expanded = expanded.replace(/LENGTH\s+(\w+)/g, (match, listName) => {
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return '0';
+        }
+        return this.vars[listName].length.toString();
+    });
+    
+    // 2. Handle AT access: <listname> AT <index>
+    // This is trickier because index might be an expression
+    // We need to handle it carefully
+    const atPattern = /(\w+)\s+AT\s+([^\s,)]+)/g;
+    expanded = expanded.replace(atPattern, (match, listName, indexExpr) => {
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return 'null';
+        }
+        
+        // Recursively evaluate the index expression
+        const index = this._evaluateExpression(indexExpr);
+        
+        const list = this.vars[listName];
+        const actualIndex = index < 0 ? list.length + index : index;
+        
+        if (actualIndex < 0 || actualIndex >= list.length) {
+            this.throwError(`(ERR: Index ${index} out of bounds for list ${listName})`);
+            return 'null';
+        }
+        
+        const value = list[actualIndex];
+        
+        // Return value in a format safe for eval
+        if (typeof value === 'string') {
+            return `"${value}"`;
+        }
+        return value.toString();
+    });
+    
+    // 3. Handle IN checks: <value> IN <listname>
+    const inPattern = /(.+?)\s+IN\s+(\w+)/g;
+    expanded = expanded.replace(inPattern, (match, valueExpr, listName) => {
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return 'false';
+        }
+        
+        const value = this._evaluateExpression(valueExpr);
+        return this.vars[listName].includes(value).toString();
+    });
+    
+    // 4. Handle FIND: FIND <value> IN <listname>
+    const findPattern = /FIND\s+(.+?)\s+IN\s+(\w+)/g;
+    expanded = expanded.replace(findPattern, (match, valueExpr, listName) => {
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return '-1';
+        }
+        
+        const value = this._evaluateExpression(valueExpr);
+        return this.vars[listName].indexOf(value).toString();
+    });
+    
+    return expanded;
+}
+
+here:
+
+// NEW: Handle list operations BEFORE complex expression evaluation
+expr = this._expandListOperations(expr);
+
+// Handle complex expressions with variables and operators
+return this._evaluateComplexExpression(expr);

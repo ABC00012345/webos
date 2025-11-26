@@ -27,12 +27,36 @@ tasks:
 - maybe add different help pages like: help modules, or for single commands like man pages on linux
 - done: terminate running wpl programs -> works
 - programming language is slow, maybe because of all the logs and for every print adding it to the div
+- fix slow: ui update now every 32ms in loops, maybe move it to print func, cuz this one needs ui update
 - fix: because of all the function calls, logs, and prints in while loop for example, it updates DOM every iteration. maybe check every few iteration for ctrl-c (and update DOM not every time print is called, hard to check, maybe with timing, only update after a specific time)
 - inconsistency!!!: maybe add START to ITER
 - loop control: add step maybe: ITER 10 TO 1 STEP 2 WITH I START
-- add break, continue to loop
+- done: add break, continue to loop - added and working
 - add lists
 add inc, dec command for simple integer manipulation instead of LET X = X+1
+- comments added
+
+- for now the language has many features and support but many things need to be put first in variables to be used, e.g. list len, exec, ..., print, ..., this has to do with the handleExpr, maybe move all important methods there, here are some of them:
+- because then other functions will work + support for LET will still be kept cuz it also uses expr
+- EXEC (maybe both, handle normally and with expr, cuz can also be without output)
+- LIST AT
+- LENGTH LIST
+- FIND
+- move all the above handling to handleExpr
+
+- def add at some point:
+string functions: SPLIT, JOIN, SUBSTR, toUpper
+conversion: str -> lst after reading file, str -> int, ...
+math functions: SQRT, POW, ABS
+less important:
+nested list (maybe important for graphics)
+try ... catch
+
+
+
+important notes:
+the more output there is on the terminal the slower execution of programs take
+!!!! iter loop bug with break/cont, maybe cuz of if/else not handled correctly, compare with while loop
 
 Finish Filesystem Layer
 

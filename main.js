@@ -271,6 +271,8 @@ class WebOSPLang {
         this.errorDesc = "";
         this.interruptExecution = false;
         this.errorAlreadyReported = false;
+        this.breakLoop = false;
+        this.contLoop = false;
         document.addEventListener('keydown', this.setInterruptExecutionFlag);
         const lines = code.split("\n").map(l => l.trim()).filter(l => l.length > 0);
         let [out] = await this.executeBlock(lines, 0);
@@ -288,7 +290,7 @@ class WebOSPLang {
     }
 
     // ----- MAIN BLOCK EXECUTION -----
-    async executeBlock(lines, startIndex, isFunctionBody = false) {
+    async executeBlock(lines, startIndex, isFunctionBody = false, insideLoopBody = false) {
         let output = ""; // output is only for function return!!!!!
         // globalOutput is output of the programm!!!!!!
         let i = startIndex;
@@ -296,14 +298,35 @@ class WebOSPLang {
         let hasReturned = false;
 
         while (i < lines.length && !hasReturned && !this.error) {
+            // Check for break/continue flags at the START of each line
+            if (insideLoopBody) {
+                console.log("DETECTED!!");
+                if (this.breakLoop) {
+                    console.log("BREAK detected at line start - stopping block execution");
+                    // set this in loop func: //this.breakLoop = false;
+                    return [output, i, returnValue];
+                }
+                if (this.contLoop) {
+                    console.log("CONTINUE detected at line start - stopping block execution");
+                    //this.contLoop = false;
+                    return [output, lines.length, returnValue]; // Return end of block
+                }
+            }
+            
             const line = lines[i];
-
+            
             console.log("LINE: "+line);
             if(!isFunctionBody){ this.globLine = i+1};
             console.log("Line: "+this.globLine+ (isFunctionBody ? " (Inside Function)":""));
-
+            
             if (this.interruptExecution) {
                 break;
+            }
+
+            // immediately skip comments
+            if (line.startsWith("//") || line.startsWith("#")) {
+                i++;
+                continue;
             }
 
             if (line.startsWith("LET ")) {
@@ -332,6 +355,7 @@ class WebOSPLang {
                 //  it calls print in here and this already adds to output
                 //output += out;
                 i = skipTo;
+                console.log("NEW I: "+ i)
                 continue;
             }
             else if (line.startsWith("WHILE ")) {
@@ -360,15 +384,59 @@ class WebOSPLang {
             else if (line.startsWith("EXEC ")) {
                 let result = await this.handleExec(line) + "\n";
             }
+            else if (line.startsWith("BREAK")) {
+                console.log("BREAK encountered - setting flag");
+                this.breakLoop = true;
+                
+                // If we're inside a loop body, break immediately
+                if (insideLoopBody) {
+                    break;
+                }
+            }
+            else if (line.startsWith("CONTINUE")) {
+                console.log("CONTINUE encountered - setting flag");
+                this.contLoop = true;
+                
+                // If we're inside a loop body, break immediately
+                if (insideLoopBody) {
+                    break;
+                }
+            }
             else if (line.startsWith("RETURN ") && isFunctionBody) {
                 const returnExpr = line.substring(7);
                 returnValue = this.evalExpr(returnExpr, true);
                 hasReturned = true;
                 break;
             }
+            // list syntax
+            else if (line.startsWith("APPEND ")) {
+                this.handleAppend(line);
+            }
+            else if (line.startsWith("REMOVE ")) {
+                this.handleRemove(line);
+            }
+            else if (line.startsWith("SET ") && line.includes(" AT ")) {
+                this.handleSetAt(line);
+            }
+            else if (line.startsWith("CLEAR ")) {
+                this.handleClear(line);
+            }
 
             i++;
         }
+
+        // Final check for break/continue when exiting the block
+        /*if (insideLoopBody) {
+            if (this.breakLoop) {
+                console.log("BREAK detected at block end");
+                this.breakLoop = false;
+            }
+            if (this.contLoop) {
+                console.log("CONTINUE detected at block end");
+                this.contLoop = false;
+            }
+        }*/
+
         if(this.interruptExecution){
             this.throwError("(ERR: Execution interrupted by user)");
         }
@@ -557,6 +625,93 @@ class WebOSPLang {
 
         console.log("var name: "+name+" expr: "+ expr);
 
+        // Handle LIST creation
+        if (expr.startsWith("LIST")) {
+            const listMatch = expr.match(/LIST\s*(.*)$/);
+            if (listMatch[1].trim() === "") {
+                // Empty list
+                this.vars[name] = [];
+            } else {
+                // List with values: LIST 1, 2, 3
+                const values = listMatch[1].split(",").map(v => this.evalExpr(v.trim(), true));
+                this.vars[name] = values;
+            }
+            console.log("Created list:", name, "=", this.vars[name]);
+            return;
+        }
+
+        // access list element
+        if (expr.includes(" AT ")) {
+            const atMatch = expr.match(/(\w+)\s+AT\s+(.+)/);
+            if (atMatch) {
+                const listName = atMatch[1];
+                const index = this.evalExpr(atMatch[2], true);
+                
+                if (!Array.isArray(this.vars[listName])) {
+                    this.throwError(`(ERR: ${listName} is not a list)`);
+                    return;
+                }
+                
+                const list = this.vars[listName];
+                const actualIndex = index < 0 ? list.length + index : index;
+                
+                if (actualIndex < 0 || actualIndex >= list.length) {
+                    this.throwError(`(ERR: Index ${index} out of bounds for list ${listName})`);
+                    return;
+                }
+                
+                this.vars[name] = list[actualIndex];
+                console.log("Accessed list:", name, "=", this.vars[name]);
+                return;
+            }
+        }
+
+        // Handle LENGTH: LET X = LENGTH LST
+        if (expr.startsWith("LENGTH ")) {
+            const listName = expr.substring(7).trim();
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return;
+            }
+            this.vars[name] = this.vars[listName].length;
+            console.log("Got length:", name, "=", this.vars[name]);
+            return;
+        }
+
+        // Handle FIND: LET X = FIND 5 IN LST
+        if (expr.includes(" IN ")) {
+            const findMatch = expr.match(/FIND\s+(.+)\s+IN\s+(\w+)/);
+            if (findMatch) {
+                const value = this.evalExpr(findMatch[1], true);
+                const listName = findMatch[2];
+                
+                if (!Array.isArray(this.vars[listName])) {
+                    this.throwError(`(ERR: ${listName} is not a list)`);
+                    return;
+                }
+                
+                this.vars[name] = this.vars[listName].indexOf(value);
+                console.log("Found index:", name, "=", this.vars[name]);
+                return;
+            }
+            
+            // Handle IN check: LET X = 5 IN LST
+            const inMatch = expr.match(/(.+)\s+IN\s+(\w+)/);
+            if (inMatch) {
+                const value = this.evalExpr(inMatch[1], true);
+                const listName = inMatch[2];
+                
+                if (!Array.isArray(this.vars[listName])) {
+                    this.throwError(`(ERR: ${listName} is not a list)`);
+                    return;
+                }
+                
+                this.vars[name] = this.vars[listName].includes(value);
+                console.log("Checked IN:", name, "=", this.vars[name]);
+                return;
+            }
+        }
+
         if (expr.startsWith("CALL ")) {
             let out = await this.handleCall(expr);
             //console.log(out);
@@ -654,6 +809,155 @@ class WebOSPLang {
         }
     }
     */
+
+    // LIST FUNCTIONS:
+    handleAppend(line){
+        // APPEND 5 TO LST
+        // APPEND 1, 2, 3 TO LST
+        const match = line.match(/APPEND\s+(.+)\s+TO\s+(\w+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid APPEND syntax. Use: APPEND value(s) TO list)");
+            return;
+        }
+        
+        const valuesExpr = match[1];
+        const listName = match[2];
+        
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return;
+        }
+        
+        // Split by comma and evaluate each value
+        const values = valuesExpr.split(",").map(v => this.evalExpr(v.trim(), true));
+        this.vars[listName].push(...values);
+        
+        console.log("Appended to list:", listName, "now:", this.vars[listName]);
+    }
+
+
+    handleRemove(line) {
+        // REMOVE 5 FROM LST (remove first occurrence by value)
+        // REMOVE INDEX 2 FROM LST (remove by index)
+        // REMOVE ALL 5 FROM LST (remove all occurrences)
+        
+        if (line.includes(" INDEX ")) {
+            const match = line.match(/REMOVE\s+INDEX\s+(.+)\s+FROM\s+(\w+)/);
+            if (!match) {
+                this.throwError("(ERR: Invalid REMOVE INDEX syntax)");
+                return;
+            }
+            
+            const index = this.evalExpr(match[1], true);
+            const listName = match[2];
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return;
+            }
+            
+            const list = this.vars[listName];
+            if (index < 0 || index >= list.length) {
+                this.throwError(`(ERR: Index ${index} out of bounds)`);
+                return;
+            }
+            
+            list.splice(index, 1);
+            console.log("Removed index", index, "from", listName);
+            
+        } else if (line.includes(" ALL ")) {
+            const match = line.match(/REMOVE\s+ALL\s+(.+)\s+FROM\s+(\w+)/);
+            if (!match) {
+                this.throwError("(ERR: Invalid REMOVE ALL syntax)");
+                return;
+            }
+            
+            const value = this.evalExpr(match[1], true);
+            const listName = match[2];
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return;
+            }
+            
+            this.vars[listName] = this.vars[listName].filter(item => item !== value);
+            console.log("Removed all", value, "from", listName);
+            
+        } else {
+            const match = line.match(/REMOVE\s+(.+)\s+FROM\s+(\w+)/);
+            if (!match) {
+                this.throwError("(ERR: Invalid REMOVE syntax)");
+                return;
+            }
+            
+            const value = this.evalExpr(match[1], true);
+            const listName = match[2];
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return;
+            }
+            
+            const index = this.vars[listName].indexOf(value);
+            if (index !== -1) {
+                this.vars[listName].splice(index, 1);
+                console.log("Removed first occurrence of", value, "from", listName);
+            }
+        }
+    }
+
+    handleSetAt(line) {
+        // SET LST AT 2 TO 99
+        const match = line.match(/SET\s+(\w+)\s+AT\s+(.+)\s+TO\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid SET AT syntax. Use: SET list AT index TO value)");
+            return;
+        }
+        
+        const listName = match[1];
+        const index = this.evalExpr(match[2], true);
+        const value = this.evalExpr(match[3], true);
+        
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return;
+        }
+        
+        const list = this.vars[listName];
+        const actualIndex = index < 0 ? list.length + index : index;
+        
+        if (actualIndex < 0 || actualIndex >= list.length) {
+            this.throwError(`(ERR: Index ${index} out of bounds)`);
+            return;
+        }
+        
+        list[actualIndex] = value;
+        console.log("Set", listName, "at", index, "to", value);
+    }
+
+    handleClear(line) {
+        // CLEAR LST
+        const match = line.match(/CLEAR\s+(\w+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid CLEAR syntax. Use: CLEAR list)");
+            return;
+        }
+        
+        const listName = match[1];
+        
+        if (!Array.isArray(this.vars[listName])) {
+            this.throwError(`(ERR: ${listName} is not a list)`);
+            return;
+        }
+        
+        this.vars[listName] = [];
+        console.log("Cleared list:", listName);
+    }
+
+
+
+
+    //
 
     // ----- EXPRESSION EVALUATOR -----
     evalExpr(expr, raw = false) {
@@ -835,6 +1139,7 @@ class WebOSPLang {
         // Proper boolean check
         if (condValue === true) {
             const [out] = await this.executeBlock(thenBlock, 0);
+            console.log("reached!! "+i+" out: "+out)
             return [out, i];
         } else if (foundElse) {
             // Only execute else block if it exists
@@ -882,6 +1187,11 @@ class WebOSPLang {
         //// IMPORTANT: maybe we add later a setting that can be defined like: #maxIter 10000000 at top of the file
         const maxIterations = 10000; // Safety limit to prevent infinite loops
         
+        let last_update = performance.now();
+        let update_time_ms = 32;
+
+        console.log(whileBlock);
+
         while (iterations < maxIterations && !this.interruptExecution) {
             // Evaluate the condition each iteration
             const condValue = this._evaluateExpression(condPart);
@@ -890,7 +1200,11 @@ class WebOSPLang {
             
             // render frame, also important for ctrl-c to work
             // maybe do after every x milliseconds to avoid overload
-            await new Promise(requestAnimationFrame);
+            let cur_time = performance.now();
+            if(cur_time - last_update > update_time_ms){
+                last_update = cur_time;
+                await new Promise(requestAnimationFrame);
+            }
 
             // Break if condition is false
             if (condValue !== true) {
@@ -898,11 +1212,27 @@ class WebOSPLang {
             }
             
             // Execute the loop body
-            const [out, nextIndex, returnValue] = await this.executeBlock(whileBlock, 0);
+            const [out, nextIndex, returnValue] = await this.executeBlock(whileBlock, 0, false, true);
             
             // Check for errors or early returns
             if (this.hasError) {
                 break;
+            }
+
+            // Check for break flag after executing until break/cont in the body
+            // Check if BREAK was encountered during body execution
+            if (this.breakLoop) {
+                console.log("BREAK detected in loop - breaking");
+                this.breakLoop = false;
+                break;
+            }
+            
+            // everything done, already skipped remaining body after continue
+            if (this.contLoop) {
+                console.log("CONTINUE detected in loop - continuing");
+                this.contLoop = false;
+                //iterations++;
+                //continue;
             }
             
             // If there was a RETURN in the loop body (in function context)
@@ -927,19 +1257,18 @@ class WebOSPLang {
     }
 
     // loop: ITER 1 TO 10 START
-    async handleLoop(lines, start){
+    /*async handleLoop(lines, start){
         const loopLine = lines[start];
         const match = loopLine.match(/^ITER\s+(.+?)\s+TO\s+(.+?)\s+WITH\s+(\w+)$/);
-    
+        
         if (!match) {
             this.throwError("(ERR: Invalid ITER syntax. Use: ITER start TO end WITH variable)");
             return start;
         }
 
-        // also evaluate expr, cuz start or end index could be defined variables
-        const iter_start = this.evalExpr(match[1], true);  // 1 (start value)
-        const iter_end = this.evalExpr(match[2], true);;    // 10 (end value)  
-        const iterator = match[3];         // i (iterator variable name)
+        const iter_start = this.evalExpr(match[1], true);
+        const iter_end = this.evalExpr(match[2], true);
+        const iterator = match[3];
 
         if (typeof iter_start !== "number" || typeof iter_end !== "number") {
             this.throwError("(ERR: Issue in ITER: start or end index isn't a number)");
@@ -950,61 +1279,243 @@ class WebOSPLang {
         
         let i = start + 1;
         let body = [];
-        while (i < lines.length && lines[i] !== "END") {
-            body.push(lines[i]);
+        let depth = 0;
+        
+        // Read body with proper nesting support
+        while (i < lines.length) {
+            const line = lines[i];
+            
+            // Check for nested structures
+            if (line.startsWith("ITER ") || line.startsWith("IF ") || line.startsWith("WHILE ")) {
+                depth++;
+            }
+            
+            // Check for END statements
+            if (line === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    break;
+                }
+            }
+            
+            body.push(line);
             i++;
         }
-        //console.log(body);
 
-        // somehow doesnt work. but doesnt matter
-        /*if(this.vars[iterator]){
-            this.throwError("(ERR: Iterator variable already defined!)")
-            return;
-        }*/
-
-        // !!! scope was removed, because variables cant be set inside loop, they get overwritten at the end,
-        // but this is still not a good scope hanbdling, cuz if you define a single variable in a loop you shouldnt be able to read it. but for now its okay, there is no try..catch, or other stuff
-        // IMPORTANT INFO: loop needs own scope because of iterator variable!
-
-        // Save current scope
-        //const oldVars = { ...this.vars };
+        let last_update = performance.now();
+        let update_time_ms = 32; // Reduced for better responsiveness
         
-        // Create new scope
-        //const loopVars = { ...oldVars };
-
-        // set iterator to start
-        //loopVars[iterator] = iter_start;
-        this.vars[iterator] = iter_start;
-
-        // Switch to function scope
-        //this.vars = loopVars;
-
-
-        // execute every iteration
-        for(let curI=iter_start;curI<iter_end;curI++){
-            if(this.interruptExecution){
+        // Save current value of iterator if it exists
+        const oldIteratorValue = this.vars[iterator];
+        
+        // Execute every iteration
+        for(let curI = iter_start; curI <= iter_end; curI++) {
+            if(this.interruptExecution) {
                 break;
             }
-            // render frame, also important for ctrl-c to work
-            // maybe do after every x milliseconds to avoid overload
-            await new Promise(requestAnimationFrame);
-            // and update iterator value
-            //loopVars[iterator] = curI;
-            //this.vars = loopVars;
+            
+            // Update iterator value
             this.vars[iterator] = curI;
-            const [out] = await this.executeBlock(body, 0);
+            console.log(`ITER ${iterator} = ${curI}`);
+            
+            // Execute the loop body
+            const [out, nextIndex, returnValue] = await this.executeBlock(body, 0, false, true);
+
+            // Check for break flag
+            if (this.breakLoop) {
+                console.log("BREAK detected in ITER loop - breaking");
+                this.breakLoop = false;
+                break;
+            }
+            
+            // Check for continue flag
+            if (this.contLoop) {
+                console.log("CONTINUE detected in ITER loop - continuing");
+                this.contLoop = false;
+                continue;
+            }
+
+            // Handle return values
+            if (returnValue !== null) {
+                break;
+            }
+            
+            // Throttle execution to prevent browser freezing
+            let cur_time = performance.now();
+            if(cur_time - last_update > update_time_ms) {
+                last_update = cur_time;
+                await new Promise(requestAnimationFrame);
+            }
+        }
+        
+        // Restore original iterator value if it existed
+        if (oldIteratorValue !== undefined) {
+            this.vars[iterator] = oldIteratorValue;
+        } else {
+            delete this.vars[iterator];
         }
 
-        // restore scope
-        //this.vars = oldVars;
+        return i + 1; // Skip END line
+    }*/
 
-        /*return {
-            iter_start: iter_start,
-            iter_end: iter_end,
-            iterator: iterator
-        };*/
-        return i;
+    // above: old loop func
+    // new loop with STEP support:
+    async handleLoop(lines, start){
+        const loopLine = lines[start];
+        
+        // Updated regex to handle optional STEP: ITER start TO end [STEP step] WITH variable
+        const match = loopLine.match(/^ITER\s+(.+?)\s+TO\s+(.+?)(?:\s+STEP\s+(.+?))?\s+WITH\s+(\w+)$/);
+        
+        if (!match) {
+            this.throwError("(ERR: Invalid ITER syntax. Use: ITER start TO end [STEP step] WITH variable)");
+            return start;
+        }
+
+        const iter_start = this.evalExpr(match[1], true);
+        const iter_end = this.evalExpr(match[2], true);
+        const step = match[3] ? this.evalExpr(match[3], true) : 1; // Default step is 1
+        const iterator = match[4];
+
+        // Validate all parameters are numbers
+        if (typeof iter_start !== "number" || typeof iter_end !== "number" || typeof step !== "number") {
+            this.throwError("(ERR: Issue in ITER: start, end, and step must be numbers)");
+            return start;
+        }
+
+        // Validate step is not zero
+        if (step === 0) {
+            this.throwError("(ERR: STEP cannot be zero)");
+            return start;
+        }
+
+        console.log("ITER start:", iter_start, "end:", iter_end, "STEP:", step, "WITH:", iterator);
+        
+        let i = start + 1;
+        let body = [];
+        let depth = 0;
+        
+        // Read body with proper nesting support
+        while (i < lines.length) {
+            const line = lines[i];
+            
+            // Check for nested structures
+            if (line.startsWith("ITER ") || line.startsWith("IF ") || line.startsWith("WHILE ")) {
+                depth++;
+            }
+            
+            // Check for END statements
+            if (line === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    break;
+                }
+            }
+            
+            body.push(line);
+            i++;
+        }
+
+        let last_update = performance.now();
+        let update_time_ms = 32;
+        
+        // Save current value of iterator if it exists
+        const oldIteratorValue = this.vars[iterator];
+        
+        // Execute every iteration with step
+        if (step > 0) {
+            // Positive step: count up
+            for(let curI = iter_start; curI <= iter_end; curI += step) {
+                if(this.interruptExecution) {
+                    break;
+                }
+                
+                // Update iterator value
+                this.vars[iterator] = curI;
+                console.log(`ITER ${iterator} = ${curI}`);
+                
+                // Execute the loop body
+                const [out, nextIndex, returnValue] = await this.executeBlock(body, 0, false, true);
+
+                // Check for break flag
+                if (this.breakLoop) {
+                    console.log("BREAK detected in ITER loop - breaking");
+                    this.breakLoop = false;
+                    break;
+                }
+                
+                // Check for continue flag
+                if (this.contLoop) {
+                    console.log("CONTINUE detected in ITER loop - continuing");
+                    this.contLoop = false;
+                    continue;
+                }
+
+                // Handle return values
+                if (returnValue !== null) {
+                    break;
+                }
+                
+                // Throttle execution to prevent browser freezing
+                let cur_time = performance.now();
+                if(cur_time - last_update > update_time_ms) {
+                    last_update = cur_time;
+                    await new Promise(requestAnimationFrame);
+                }
+            }
+        } else {
+            // Negative step: count down
+            for(let curI = iter_start; curI >= iter_end; curI += step) { // step is negative, so this counts down
+                if(this.interruptExecution) {
+                    break;
+                }
+                
+                // Update iterator value
+                this.vars[iterator] = curI;
+                console.log(`ITER ${iterator} = ${curI}`);
+                
+                // Execute the loop body
+                const [out, nextIndex, returnValue] = await this.executeBlock(body, 0, false, true);
+
+                // Check for break flag
+                if (this.breakLoop) {
+                    console.log("BREAK detected in ITER loop - breaking");
+                    this.breakLoop = false;
+                    break;
+                }
+                
+                // Check for continue flag
+                if (this.contLoop) {
+                    console.log("CONTINUE detected in ITER loop - continuing");
+                    this.contLoop = false;
+                    continue;
+                }
+
+                // Handle return values
+                if (returnValue !== null) {
+                    break;
+                }
+                
+                // Throttle execution to prevent browser freezing
+                let cur_time = performance.now();
+                if(cur_time - last_update > update_time_ms) {
+                    last_update = cur_time;
+                    await new Promise(requestAnimationFrame);
+                }
+            }
+        }
+        
+        // Restore original iterator value if it existed
+        if (oldIteratorValue !== undefined) {
+            this.vars[iterator] = oldIteratorValue;
+        } else {
+            delete this.vars[iterator];
+        }
+
+        return i + 1; // Skip END line
     }
+
     
     throwError(desc){
         this.error = true;
@@ -1058,7 +1569,7 @@ class WebOSPLang {
 
         console.log("FUNC: NAME " + name + " ARGS " + args);
 
-        if (!fn) return "(ERR: Function not found)";
+        if (!fn) return "(ERR: Function not found)"; // maybe throw error and terminate
 
         // Check parameter count only if function has parameters defined
         if (fn.params.length !== args.length) {
@@ -1177,8 +1688,42 @@ END
 LET I = 0
 WHILE I < 1000 START
 	PRINT "while: " I
+    LET I = I+1
 END
 `;
+
+// list style based on my list style, improved by claude:
+`
+# Create lists
+LET LST = LIST                    # Empty list
+LET LST = LIST 1, 2, 3, 4, 5     # List with initial values
+
+# Append (your syntax is good!)
+APPEND 5 TO LST                   # Single value
+APPEND 1, 2, 3 TO LST            # Multiple values
+
+# Access (simpler than your ACCESS keyword)
+LET X = LST AT 0                  # Get first element
+LET LAST = LST AT -1             # Negative index (last element)
+
+# Remove
+REMOVE 5 FROM LST                 # Remove by value (first occurrence)
+REMOVE INDEX 2 FROM LST          # Remove by index
+REMOVE ALL 5 FROM LST            # Remove all occurrences
+
+# Length
+LET LSTLEN = LENGTH LST          # Your syntax is perfect here
+
+# Iteration (your syntax works!)
+ITER 0 TO LENGTH LST WITH I START
+    LET ITEM = LST AT I
+    PRINT ITEM
+END
+
+# Set value at index
+SET LST AT 2 TO 99               # Change element at index 2
+
+`
 
 
 // store modules here
@@ -2933,13 +3478,18 @@ let syntaxHighLighting = {
         "rmdirf", "rmf", "rm", "touch", "pwd", "write", "mv", "cp", 
         "exist", "append", "run", "date", "load", "randint", "randfloat", 
         "randstring", "loadall", "unload", "modinfo", "reboot", "exit", 
-        "edit", "history","ping","fetch"
+        "edit", "history","ping","fetch","wpl"
     ],
     },
     wpl: {
       blue: ["#wpl"],
       green: [
-        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START","END","CALL","WITH","IF","ELSE","THEN","EXEC","ITER"," TO ", "WHILE "
+        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START",
+        "APPEND ","REMOVE ", "END","CALL","WITH","IF","ELSE","THEN",
+        "EXEC","ITER"," TO ", "WHILE ", " STEP ", "BREAK", "CONTINUE",
+        " INDEX ", " FROM ", " AT ", "SET ", "FIND ", " IN ", "LENGTH ",
+        "LIST", "CLEAR ", " ALL "
+
       ],
     }
 };
