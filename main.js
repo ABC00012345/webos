@@ -243,6 +243,163 @@ class Network {
     }
 }
 
+// Graphics/GUI module
+class Graphics {
+    constructor() {
+        this.canvas = null;
+        this.ctx = null;
+        this.width = 800;
+        this.height = 600;
+        this.isInitialized = false;
+    }
+
+    // Initialize the canvas and replace terminal
+    init(width = 800, height = 600) {
+        if (this.isInitialized) {
+            return { success: false, error: "Graphics already initialized" };
+        }
+
+        this.width = width;
+        this.height = height;
+
+        // Get terminal element
+        const terminal = document.getElementById('terminal');
+        
+        // Clear terminal
+        terminal.innerHTML = '';
+
+        // Create canvas
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+        this.canvas.style.border = '1px solid #00ff00';
+        this.canvas.style.backgroundColor = '#000';
+        this.canvas.style.imageRendering = 'pixelated'; // For crisp pixel art
+        
+        // Add canvas to terminal
+        terminal.appendChild(this.canvas);
+
+        // Get 2D context
+        this.ctx = this.canvas.getContext('2d');
+        
+        // Set default styles
+        this.ctx.fillStyle = '#00ff00';
+        this.ctx.strokeStyle = '#00ff00';
+        this.ctx.font = '16px monospace';
+
+        this.isInitialized = true;
+
+        return { success: true };
+    }
+
+    // Close graphics mode and restore terminal
+    close() {
+        if (!this.isInitialized) {
+            return { success: false, error: "Graphics not initialized" };
+        }
+
+        const terminal = document.getElementById('terminal');
+        terminal.innerHTML = '';
+        
+        this.canvas = null;
+        this.ctx = null;
+        this.isInitialized = false;
+
+        // Recreate input line
+        createInputLine();
+
+        return { success: true };
+    }
+
+    // Check if initialized
+    checkInit() {
+        if (!this.isInitialized) {
+            throw new Error("Graphics not initialized. Use GINIT first.");
+        }
+    }
+
+    // same as above but returns just true/false and no error
+    isUsed() {
+        return this.isInitialized;
+    }
+
+    // Clear screen
+    clear(color = '#000000') {
+        this.checkInit();
+        this.ctx.fillStyle = color;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+    }
+
+    // Draw pixel
+    drawPixel(x, y, color = '#00ff00') {
+        this.checkInit();
+        this.ctx.fillStyle = color;
+        this.ctx.fillRect(x, y, 1, 1);
+    }
+
+    // Draw line
+    drawLine(x1, y1, x2, y2, color = '#00ff00', width = 1) {
+        this.checkInit();
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x1, y1);
+        this.ctx.lineTo(x2, y2);
+        this.ctx.stroke();
+    }
+
+    // Draw rectangle (outline)
+    drawRect(x, y, w, h, color = '#00ff00', width = 1) {
+        this.checkInit();
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.strokeRect(x, y, w, h);
+    }
+
+    // Draw filled rectangle
+    fillRect(x, y, w, h, color = '#00ff00') {
+        this.checkInit();
+        this.ctx.fillStyle = color;
+        this.ctx.fillRect(x, y, w, h);
+    }
+
+    // Draw circle (outline)
+    drawCircle(x, y, radius, color = '#00ff00', width = 1) {
+        this.checkInit();
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.beginPath();
+        this.ctx.arc(x, y, radius, 0, Math.PI * 2);
+        this.ctx.stroke();
+    }
+
+    // Draw filled circle
+    fillCircle(x, y, radius, color = '#00ff00') {
+        this.checkInit();
+        this.ctx.fillStyle = color;
+        this.ctx.beginPath();
+        this.ctx.arc(x, y, radius, 0, Math.PI * 2);
+        this.ctx.fill();
+    }
+
+    // Draw text
+    drawText(x, y, text, color = '#00ff00', size = 16) {
+        this.checkInit();
+        this.ctx.fillStyle = color;
+        this.ctx.font = `${size}px monospace`;
+        this.ctx.fillText(text, x, y);
+    }
+
+    // Get canvas dimensions
+    getWidth() {
+        return this.width;
+    }
+
+    getHeight() {
+        return this.height;
+    }
+}
+
 // WebOSProgrammingLanguage
 class WebOSPLang {
     constructor(execHandler = null) {
@@ -423,6 +580,37 @@ class WebOSPLang {
             }
             else if (line.startsWith("CLEAR ")) {
                 this.handleClear(line);
+            }
+            // graphics:
+            else if (line.startsWith("GINIT")) {
+                this.handleGInit(line);
+            }
+            else if (line.startsWith("GCLOSE")) {
+                this.handleGClose();
+            }
+            else if (line.startsWith("GCLEAR ")) {
+                this.handleGClear(line);
+            }
+            else if (line.startsWith("GPIXEL ")) {
+                this.handleGPixel(line);
+            }
+            else if (line.startsWith("GLINE ")) {
+                this.handleGLine(line);
+            }
+            else if (line.startsWith("GRECT ")) {
+                this.handleGRect(line);
+            }
+            else if (line.startsWith("GFRECT ")) {
+                this.handleGFRect(line);
+            }
+            else if (line.startsWith("GCIRCLE ")) {
+                this.handleGCircle(line);
+            }
+            else if (line.startsWith("GFCIRCLE ")) {
+                this.handleGFCircle(line);
+            }
+            else if (line.startsWith("GTEXT ")) {
+                this.handleGText(line);
             }
 
             i++;
@@ -992,8 +1180,19 @@ class WebOSPLang {
         // Handle booleans
         if (expr === 'true') return true;
         if (expr === 'false') return false;
-
+        
+        // ⚡ NEW: Handle direct variable references (including lists)
+        // Check if expr is just a simple variable name
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
+            if (this.vars[expr] !== undefined) {
+                return this.vars[expr];  // Return the actual value (including arrays)
+            }
+        }
+        
+        // Expand list operations BEFORE complex expression evaluation
         expr = this._expandListOperations(expr);
+
+        expr = this._expandGraphicsOperations(expr);
         
         // Handle complex expressions with variables and operators
         return this._evaluateComplexExpression(expr);
@@ -1089,6 +1288,25 @@ class WebOSPLang {
         return expanded;
     }
 
+    _expandGraphicsOperations(expr){
+        let expanded = expr
+
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // maybe do the dame for function names if implementing,
+        // functions to be called like: LET RES = ADD 1,2,3,A,B,...
+        // GUSED
+        expanded = expanded.replace(/GUSED/g, () => {
+            
+            return Modules.gfx.isUsed().toString();
+        });
+
+        return expanded
+    }
+
     // Helper function to evaluate complex expressions
     _evaluateComplexExpression(expr) {
         // First, replace all string literals with placeholders to protect them
@@ -1109,7 +1327,12 @@ class WebOSPLang {
                     return placeholder;
                 } else if (typeof val === 'boolean') {
                     return val.toString();
-                } 
+                } else if (Array.isArray(val)) {
+                    // NEW: Handle arrays
+                    // Convert array to JSON representation
+                    const jsonStr = JSON.stringify(val);
+                    return jsonStr;
+                }
                 return val;
             }
             return id;
@@ -1699,6 +1922,333 @@ class WebOSPLang {
 
         return returnValue;
     }
+
+    // graphics:
+    handleGInit(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded. Use: load gfx)");
+            return;
+        }
+
+        // GINIT or GINIT 800, 600
+        const match = line.match(/GINIT(?:\s+(.+))?/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GINIT syntax. Use: GINIT [width, height])");
+            return;
+        }
+
+        let width = 800, height = 600;
+        if (match[1]) {
+            const args = this.parseCommaArgs(match[1]);
+            if (args.length === 2) {
+                width = parseInt(this.evalExpr(args[0], true));
+                height = parseInt(this.evalExpr(args[1], true));
+            } else if (args.length > 0) {
+                this.throwError("(ERR: GINIT requires 0 or 2 arguments)");
+                return;
+            }
+        }
+
+        const result = Modules.gfx.init(width, height);
+        if (!result.success) {
+            this.throwError(`(ERR: ${result.error})`);
+        }
+    }
+
+    handleGClose() {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        const result = Modules.gfx.close();
+        if (!result.success) {
+            this.throwError(`(ERR: ${result.error})`);
+        }
+    }
+
+    handleGClear(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GCLEAR or GCLEAR "#ff0000"
+        const match = line.match(/GCLEAR(?:\s+(.+))?/);
+        let color = '#000000';
+        
+        if (match && match[1]) {
+            const args = this.parseCommaArgs(match[1]);
+            if (args.length > 1) {
+                this.throwError("(ERR: GCLEAR takes 0 or 1 arguments)");
+                return;
+            }
+            color = this.evalExpr(args[0], true);
+        }
+
+        try {
+            Modules.gfx.clear(color);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGPixel(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GPIXEL x, y or GPIXEL x, y, color
+        const match = line.match(/GPIXEL\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GPIXEL syntax. Use: GPIXEL x, y [, color])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 2 || args.length > 3) {
+            this.throwError("(ERR: GPIXEL requires 2 or 3 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const color = args[2] ? this.evalExpr(args[2], true) : '#00ff00';
+
+        try {
+            Modules.gfx.drawPixel(x, y, color);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGLine(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GLINE x1, y1, x2, y2 [, color, width]
+        const match = line.match(/GLINE\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GLINE syntax. Use: GLINE x1, y1, x2, y2 [, color, width])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 4 || args.length > 6) {
+            this.throwError("(ERR: GLINE requires 4 to 6 arguments)");
+            return;
+        }
+
+        const x1 = this.evalExpr(args[0], true);
+        const y1 = this.evalExpr(args[1], true);
+        const x2 = this.evalExpr(args[2], true);
+        const y2 = this.evalExpr(args[3], true);
+        const color = args[4] ? this.evalExpr(args[4], true) : '#00ff00';
+        const width = args[5] ? this.evalExpr(args[5], true) : 1;
+
+        try {
+            Modules.gfx.drawLine(x1, y1, x2, y2, color, width);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGRect(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GRECT x, y, w, h [, color, width]
+        const match = line.match(/GRECT\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GRECT syntax. Use: GRECT x, y, w, h [, color, width])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 4 || args.length > 6) {
+            this.throwError("(ERR: GRECT requires 4 to 6 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const w = this.evalExpr(args[2], true);
+        const h = this.evalExpr(args[3], true);
+        const color = args[4] ? this.evalExpr(args[4], true) : '#00ff00';
+        const lineWidth = args[5] ? this.evalExpr(args[5], true) : 1;
+
+        try {
+            Modules.gfx.drawRect(x, y, w, h, color, lineWidth);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGFRect(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GFRECT x, y, w, h [, color]
+        const match = line.match(/GFRECT\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GFRECT syntax. Use: GFRECT x, y, w, h [, color])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 4 || args.length > 5) {
+            this.throwError("(ERR: GFRECT requires 4 or 5 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const w = this.evalExpr(args[2], true);
+        const h = this.evalExpr(args[3], true);
+        const color = args[4] ? this.evalExpr(args[4], true) : '#00ff00';
+
+        try {
+            Modules.gfx.fillRect(x, y, w, h, color);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGCircle(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GCIRCLE x, y, radius [, color, width]
+        const match = line.match(/GCIRCLE\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GCIRCLE syntax. Use: GCIRCLE x, y, radius [, color, width])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 3 || args.length > 5) {
+            this.throwError("(ERR: GCIRCLE requires 3 to 5 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const radius = this.evalExpr(args[2], true);
+        const color = args[3] ? this.evalExpr(args[3], true) : '#00ff00';
+        const width = args[4] ? this.evalExpr(args[4], true) : 1;
+
+        try {
+            Modules.gfx.drawCircle(x, y, radius, color, width);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGFCircle(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GFCIRCLE x, y, radius [, color]
+        const match = line.match(/GFCIRCLE\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GFCIRCLE syntax. Use: GFCIRCLE x, y, radius [, color])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 3 || args.length > 4) {
+            this.throwError("(ERR: GFCIRCLE requires 3 or 4 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const radius = this.evalExpr(args[2], true);
+        const color = args[3] ? this.evalExpr(args[3], true) : '#00ff00';
+
+        try {
+            Modules.gfx.fillCircle(x, y, radius, color);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    handleGText(line) {
+        if (!Modules.gfx) {
+            this.throwError("(ERR: Graphics module not loaded)");
+            return;
+        }
+
+        // GTEXT x, y, text [, color, size]
+        const match = line.match(/GTEXT\s+(.+)/);
+        if (!match) {
+            this.throwError("(ERR: Invalid GTEXT syntax. Use: GTEXT x, y, text [, color, size])");
+            return;
+        }
+
+        const args = this.parseCommaArgs(match[1]);
+        if (args.length < 3 || args.length > 5) {
+            this.throwError("(ERR: GTEXT requires 3 to 5 arguments)");
+            return;
+        }
+
+        const x = this.evalExpr(args[0], true);
+        const y = this.evalExpr(args[1], true);
+        const text = this.evalExpr(args[2], true);
+        const color = args[3] ? this.evalExpr(args[3], true) : '#00ff00';
+        const size = args[4] ? this.evalExpr(args[4], true) : 16;
+
+        try {
+            Modules.gfx.drawText(x, y, text, color, size);
+        } catch (e) {
+            this.throwError(`(ERR: ${e.message})`);
+        }
+    }
+
+    // maybe make other functions also use parseCommaArgs like lists, function params, calls
+    // Helper function to parse comma-separated arguments
+    parseCommaArgs(argString) {
+        const args = [];
+        let current = '';
+        let inQuotes = false;
+        let quoteChar = null;
+        
+        for (let i = 0; i < argString.length; i++) {
+            const char = argString[i];
+            
+            if ((char === '"' || char === "'") && !inQuotes) {
+                inQuotes = true;
+                quoteChar = char;
+                current += char;
+            } else if (char === quoteChar && inQuotes) {
+                inQuotes = false;
+                quoteChar = null;
+                current += char;
+            } else if (char === ',' && !inQuotes) {
+                args.push(current.trim());
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        
+        if (current.trim()) {
+            args.push(current.trim());
+        }
+        
+        return args;
+    }
 }
 
 // basic language syntax
@@ -1829,6 +2379,7 @@ class Modules{
     static random = null;
     static net = null;
     static wpl = null;
+    static gfx = null;
 }
 
 // module loader
@@ -1838,7 +2389,8 @@ class Loader {
         { name: "date", key: "date", classRef: DateUtils },
         { name: "random", key: "random", classRef: RandomUtils },
         { name: "net", key: "net", classRef: Network },
-        { name: "wpl", key: "wpl", classRef: WebOSPLang }
+        { name: "wpl", key: "wpl", classRef: WebOSPLang },
+        { name: "gfx", key: "gfx", classRef: Graphics }
     ];
 
     static systemModules = ["fs"];
@@ -3581,6 +4133,8 @@ let syntaxHighLighting = {
     wpl: {
       blue: ["#wpl"],
       green: [
+        "GINIT", "GCLOSE", "GCLEAR", "GPIXEL", "GLINE", "GRECT", 
+        "GFRECT", "GCIRCLE", "GFCIRCLE", "GTEXT","GUSED",
         "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START",
         "APPEND ","REMOVE ", "END","CALL","WITH","IF","ELSE","THEN",
         "EXEC","ITER"," TO ", "WHILE ", " STEP ", "BREAK", "CONTINUE",
