@@ -2891,9 +2891,45 @@ END
 SET LST AT 2 TO 99               # Change element at index 2
 `
 
+const keys = {};
+window.addEventListener("keydown", (e) => {
+    keys[e.key] = true;
+});
+
+window.addEventListener("keyup", (e) => {
+    keys[e.key] = false;
+});
+let wplenv = {
+    outputToTerminalImmediately: (text, col = "green") => {
+        // Create and append output line directly to terminal
+        const outputLine = document.createElement('div');
+        outputLine.classList.add('output-line');
+        outputLine.textContent = text;
+        outputLine.style.color = col; // or whatever color you prefer
+        
+        // Get the terminal element
+        const terminal = document.getElementById('terminal');
+        terminal.appendChild(outputLine);
+        
+        // Scroll to bottom to show new output
+        window.scrollTo(0, document.body.scrollHeight);
+    },
+
+    execCmd: async (evaluatedCmd) => {
+        let res = await commandManager.executeCommand(evaluatedCmd);
+        res = res[0].toString();
+        //console.log("exec res: "+res);
+        //res = res.replaceAll("\"","\\\"");
+        return res;
+    },
+    isKeyDown: (key) => {
+        return !!keys[key];
+    }
+}
 
 
 /* WEBOSPL COMPILER -> JS */
+/*
 class WOPLCOMPJS {
     constructor() {
         this.indentLevel = 0;
@@ -2906,8 +2942,11 @@ class WOPLCOMPJS {
 
     compile(code) {
         const lines = code.split("\n");
-        let js = "";
+        //let js = "";
         const stack = [];
+
+        let js = "return (async () => {\n"; // start async wrapper
+        this.indentLevel++;
 
         for (let rawLine of lines) {
             let line = rawLine.trim();
@@ -2978,6 +3017,38 @@ class WOPLCOMPJS {
             if (line.startsWith("PRINT")) {
                 const expr = line.substring(6);
                 js += `${this.indent()}console.log(${this.transformPrint(expr)});\n`;
+                // exec external function
+                js += `${this.indent()}wplenv.outputToTerminalImmediately(${this.transformPrint(expr)});\n`;
+                continue;
+            }
+            
+            if (line.startsWith("EXEC")) {
+                const match = line.match(/^EXEC\s+(.+)/);
+                if (!match) throw new Error("Invalid EXEC syntax: " + line);
+            
+                const cmd = match[1].trim();
+            
+                js += `${this.indent()}await wplenv.execCmd(\`${cmd}\`);\n`;
+                continue;
+            }
+
+            // ===== EXEC =====                          // maybe handle better - also  alow exec without var
+            if (line.startsWith("LET") && ( line.includes("= EXEC") || line.includes("=EXEC")) ) {
+                // Syntax: LET VAR = EXEC command args...
+                const match = line.match(/LET (\w+) = EXEC (.+)/);
+                if (!match) throw new Error("Invalid EXEC syntax: " + line);
+
+                const varName = match[1];
+                const cmd = match[2].trim(); // this could be "ls /" or similar
+                console.log("EXEC CMD: " + cmd);
+
+                // Check if variable already declared
+                if (this.declaredVars.has(varName)) {
+                    js += `${this.indent()}${varName} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                } else {
+                    js += `${this.indent()}let ${varName} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                    this.declaredVars.add(varName);
+                }
                 continue;
             }
 
@@ -3014,11 +3085,126 @@ class WOPLCOMPJS {
                 continue;
             }
 
-            // ===== FALLBACK =====
-            js += `${this.indent()}// Unknown: ${line}\n`;
+            if (line.startsWith("SLEEP")) {
+                const expr = line.substring(6).trim();
+                const ms = expr ? this.transformExpr(expr) : "0";
+                js += `${this.indent()}await new Promise(r => setTimeout(r, ${ms}));\n`;
+                continue;
+            }
+
+            // ===== GRAPHICS COMMANDS =====
+            if (/^GINIT/.test(line)) {
+                const match = line.match(/GINIT(?:\s+(.+))?/);
+                let width = 800, height = 600;
+                if (match && match[1]) {
+                    const args = match[1].split(",").map(a => a.trim());
+                    if (args.length === 2) {
+                        width = this.transformExpr(args[0]);
+                        height = this.transformExpr(args[1]);
+                    }
+                }
+                js += `${this.indent()}Modules.gfx.init(${width}, ${height});\n`;
+                continue;
+            }
+
+            if (/^GCLOSE/.test(line)) {
+                js += `${this.indent()}Modules.gfx.close();\n`;
+                continue;
+            }
+
+            if (/^GCLEAR/.test(line)) {
+                const match = line.match(/GCLEAR(?:\s+(.+))?/);
+                let color = '"#000000"';
+                if (match && match[1]) color = this.transformExpr(match[1]);
+                js += `${this.indent()}Modules.gfx.clear(${color});\n`;
+                continue;
+            }
+
+            if (/^GPIXEL/.test(line)) {
+                const args = line.match(/GPIXEL\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const color = args[2] ? this.transformExpr(args[2]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.drawPixel(${x}, ${y}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GLINE/.test(line)) {
+                const args = line.match(/GLINE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x1 = this.transformExpr(args[0]);
+                const y1 = this.transformExpr(args[1]);
+                const x2 = this.transformExpr(args[2]);
+                const y2 = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                const width = args[5] ? this.transformExpr(args[5]) : 1;
+                js += `${this.indent()}Modules.gfx.drawLine(${x1}, ${y1}, ${x2}, ${y2}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GRECT/.test(line)) {
+                const args = line.match(/GRECT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const w = this.transformExpr(args[2]);
+                const h = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                const width = args[5] ? this.transformExpr(args[5]) : 1;
+                js += `${this.indent()}Modules.gfx.drawRect(${x}, ${y}, ${w}, ${h}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GFRECT/.test(line)) {
+                const args = line.match(/GFRECT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const w = this.transformExpr(args[2]);
+                const h = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.fillRect(${x}, ${y}, ${w}, ${h}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GCIRCLE/.test(line)) {
+                const args = line.match(/GCIRCLE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const r = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                const width = args[4] ? this.transformExpr(args[4]) : 1;
+                js += `${this.indent()}Modules.gfx.drawCircle(${x}, ${y}, ${r}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GFCIRCLE/.test(line)) {
+                const args = line.match(/GFCIRCLE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const r = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.fillCircle(${x}, ${y}, ${r}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GTEXT/.test(line)) {
+                const args = line.match(/GTEXT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const text = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                const size = args[4] ? this.transformExpr(args[4]) : 16;
+                js += `${this.indent()}Modules.gfx.drawText(${x}, ${y}, ${text}, ${color}, ${size});\n`;
+                continue;
+            }
+
         }
 
+        // ===== FALLBACK =====
+        js += `${this.indent()}// Unknown: ${line}\n`;
+
+        this.indentLevel--;
+        js += "})();\n";
         return js;
+        
     }
 
     transformExpr(expr) {
@@ -3036,6 +3222,11 @@ class WOPLCOMPJS {
 
         // ACCESS: LST AT X
         expr = expr.replace(/(\w+) AT (.+)/g, (_, arr, idx) => `${arr}[${idx}]`);
+
+
+        expr = expr.replace(/ISDOWN\s+(".*?")/g, (_, key) => {
+            return `wplenv.isKeyDown(${key})`;
+        });
 
         return expr;
     }
@@ -3067,9 +3258,443 @@ class WOPLCOMPJS {
             else return p;
         }).join(" + ");
     }
+}*/
+
+class WOPLCOMPJS {
+    constructor() {
+        this.indentLevel = 0;
+        this.declaredVars = new Set();
+    }
+
+    indent() {
+        return "    ".repeat(this.indentLevel);
+    }
+
+    compile(code) {
+        const lines = code.split("\n");
+        let js = "return (async () => {\n";
+        this.indentLevel++;
+
+        for (let rawLine of lines) {
+            let line = rawLine.trim();
+            if (!line || line.startsWith("#")) continue;
+
+            let handled = false;
+
+            // ===== FUNCTION =====
+            if (line.startsWith("FUNCTION")) {
+                const match = line.match(/^FUNCTION\s+(\w+)\s+PARAM\s+(.+)\s+START$/);
+                if (!match) throw new Error("Invalid FUNCTION syntax: " + line);
+
+                const name = match[1];
+                const params = match[2].split(",").map(p => p.trim()).filter(p => p);
+
+                js += `${this.indent()}async function ${name}(${params.join(", ")}) {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== END =====
+            if (line === "END") {
+                this.indentLevel--;
+                js += `${this.indent()}}\n`;
+                handled = true;
+                continue;
+            }
+
+            // ===== ELSEIF =====
+            if (line.startsWith("ELSEIF")) {
+                const condition = line.match(/ELSEIF (.+) THEN/)[1];
+                js += `${this.indent()}} else if (${this.transformExpr(condition)}) {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== ELSE =====
+            if (line === "ELSE") {
+                this.indentLevel--;
+                js += `${this.indent()}} else {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== IF =====
+            if (line.startsWith("IF")) {
+                const condition = line.match(/IF (.+) THEN/)[1];
+                js += `${this.indent()}if (${this.transformExpr(condition)}) {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== WHILE =====
+            if (line.startsWith("WHILE")) {
+                const condition = line.match(/WHILE (.+) START/)[1];
+                js += `${this.indent()}while (${this.transformExpr(condition)}) {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== ITER (FIXED) =====
+            if (line.startsWith("ITER")) {
+                const match = line.match(/^ITER\s+(.+?)\s+TO\s+(.+?)(?:\s+STEP\s+(.+?))?\s+WITH\s+(\w+)$/);
+                if (!match) throw new Error("Invalid ITER syntax: " + line);
+
+                const start = this.transformExpr(match[1]);
+                const end = this.transformExpr(match[2]);
+                const step = match[3] ? this.transformExpr(match[3]) : "1"; // default step
+                const varName = match[4];
+
+                js += `${this.indent()}for (let ${varName} = ${start}; `;
+
+                // Determine loop direction based on step
+                if (step.trim().startsWith("-")) {
+                    js += `${varName} >= ${end}; `;
+                } else {
+                    js += `${varName} <= ${end}; `;
+                }
+
+                js += `${varName} += ${step}) {\n`;
+                this.indentLevel++;
+                handled = true;
+                continue;
+            }
+
+            // ===== RETURN =====
+            if (line.startsWith("RETURN")) {
+                const expr = line.substring(7);
+                js += `${this.indent()}return ${this.transformExpr(expr)};\n`;
+                handled = true;
+                continue;
+            }
+
+            // ===== PRINT =====
+            if (line.startsWith("PRINT")) {
+                const expr = line.substring(6);
+                const out = this.transformPrint(expr);
+
+                js += `${this.indent()}console.log(${out});\n`;
+                js += `${this.indent()}wplenv.outputToTerminalImmediately(${out});\n`;
+
+                handled = true;
+                continue;
+            }
+
+            // ===== EXEC (no LET) =====
+            if (line.startsWith("EXEC")) {
+                const match = line.match(/^EXEC\s+(.+)/);
+                const cmd = match[1].trim();
+                js += `${this.indent()}await wplenv.execCmd(\`${cmd}\`);\n`;
+                handled = true;
+                continue;
+            }
+
+            // ===== EXEC with LET =====
+            if (line.startsWith("LET") && line.includes("EXEC")) {
+                const match = line.match(/LET (\w+) = EXEC (.+)/);
+                const varName = match[1];
+                const cmd = match[2].trim();
+
+                if (this.declaredVars.has(varName)) {
+                    js += `${this.indent()}${varName} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                } else {
+                    js += `${this.indent()}let ${varName} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                    this.declaredVars.add(varName);
+                }
+
+                handled = true;
+                continue;
+            }
+
+            // ===== LET =====
+            if (line.startsWith("LET")) {
+                if (line.includes("= LIST")) {
+                    const [, name, items] = line.match(/LET (\w+) = LIST(?: (.+))?/);
+
+                    const value = items ? `[${items}]` : "[]";
+
+                    if (this.declaredVars.has(name)) {
+                        js += `${this.indent()}${name} = ${value};\n`;
+                    } else {
+                        js += `${this.indent()}let ${name} = ${value};\n`;
+                        this.declaredVars.add(name);
+                    }
+                } else {
+                    const [, name, value] = line.match(/LET (\w+) = (.+)/);
+
+                    if (this.declaredVars.has(name)) {
+                        js += `${this.indent()}${name} = ${this.transformExpr(value)};\n`;
+                    } else {
+                        js += `${this.indent()}let ${name} = ${this.transformExpr(value)};\n`;
+                        this.declaredVars.add(name);
+                    }
+                }
+
+                handled = true;
+                continue;
+            }
+
+            // ===== SET =====
+            if (line.startsWith("SET")) {
+                const [, listName, index, value] = line.match(/SET (\w+) AT (.+) TO (.+)/);
+                js += `${this.indent()}${listName}[${this.transformExpr(index)}] = ${this.transformExpr(value)};\n`;
+                handled = true;
+                continue;
+            }
+
+            // ===== SLEEP =====
+            if (line.startsWith("SLEEP")) {
+                const expr = line.substring(6).trim();
+                js += `${this.indent()}await new Promise(r => setTimeout(r, ${this.transformExpr(expr || "0")}));\n`;
+                handled = true;
+                continue;
+            }
+
+            if (line.startsWith("APPEND")) {
+                const match = line.match(/^APPEND (.+) TO (\w+)/);
+                if (!match) throw new Error("Invalid APPEND syntax: " + line);
+
+                const values = match[1].split(",").map(v => this.transformExpr(v.trim()));
+                const list = match[2];
+
+                for (let v of values) {
+                    js += `${this.indent()}${list}.push(${v});\n`;
+                }
+
+                handled = true;
+                continue;
+            }
+
+            if (line.startsWith("REMOVE INDEX")) {
+                const match = line.match(/^REMOVE INDEX (.+) FROM (\w+)/);
+                if (!match) throw new Error("Invalid REMOVE INDEX syntax: " + line);
+
+                const index = this.transformExpr(match[1]);
+                const list = match[2];
+
+                js += `${this.indent()}${list}.splice(${index}, 1);\n`;
+
+                handled = true;
+                continue;
+            }
+
+            if (line.startsWith("REMOVE")) {
+                const match = line.match(/^REMOVE (.+) FROM (\w+)/);
+                if (!match) throw new Error("Invalid REMOVE syntax: " + line);
+
+                const value = this.transformExpr(match[1]);
+                const list = match[2];
+
+                js += `${this.indent()}let __idx = ${list}.indexOf(${value});\n`;
+                js += `${this.indent()}if (__idx !== -1) ${list}.splice(__idx, 1);\n`;
+
+                handled = true;
+                continue;
+            }
+
+            if (line.startsWith("REMOVE")) {
+                const match = line.match(/^REMOVE (.+) FROM (\w+)/);
+                if (!match) throw new Error("Invalid REMOVE syntax: " + line);
+
+                const value = this.transformExpr(match[1]);
+                const list = match[2];
+
+                js += `${this.indent()}let __idx = ${list}.indexOf(${value});\n`;
+                js += `${this.indent()}if (__idx !== -1) ${list}.splice(__idx, 1);\n`;
+
+                handled = true;
+                continue;
+            }
+
+            if (line === "BREAK") {
+                js += `${this.indent()}break;\n`;
+                handled = true;
+                continue;
+            }
+
+            if (line === "CONTINUE") {
+                js += `${this.indent()}continue;\n`;
+                handled = true;
+                continue;
+            }
+
+            
+
+            // ===== GRAPHICS =====
+            if (/^GINIT/.test(line)) {
+                const match = line.match(/GINIT(?:\s+(.+))?/);
+                let width = 800, height = 600;
+                if (match && match[1]) {
+                    const args = match[1].split(",").map(a => a.trim());
+                    if (args.length === 2) {
+                        width = this.transformExpr(args[0]);
+                        height = this.transformExpr(args[1]);
+                    }
+                }
+                js += `${this.indent()}Modules.gfx.init(${width}, ${height});\n`;
+                continue;
+            }
+
+            if (/^GCLOSE/.test(line)) {
+                js += `${this.indent()}Modules.gfx.close();\n`;
+                continue;
+            }
+
+            if (/^GCLEAR/.test(line)) {
+                const match = line.match(/GCLEAR(?:\s+(.+))?/);
+                let color = '"#000000"';
+                if (match && match[1]) color = this.transformExpr(match[1]);
+                js += `${this.indent()}Modules.gfx.clear(${color});\n`;
+                continue;
+            }
+
+            if (/^GPIXEL/.test(line)) {
+                const args = line.match(/GPIXEL\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const color = args[2] ? this.transformExpr(args[2]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.drawPixel(${x}, ${y}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GLINE/.test(line)) {
+                const args = line.match(/GLINE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x1 = this.transformExpr(args[0]);
+                const y1 = this.transformExpr(args[1]);
+                const x2 = this.transformExpr(args[2]);
+                const y2 = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                const width = args[5] ? this.transformExpr(args[5]) : 1;
+                js += `${this.indent()}Modules.gfx.drawLine(${x1}, ${y1}, ${x2}, ${y2}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GRECT/.test(line)) {
+                const args = line.match(/GRECT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const w = this.transformExpr(args[2]);
+                const h = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                const width = args[5] ? this.transformExpr(args[5]) : 1;
+                js += `${this.indent()}Modules.gfx.drawRect(${x}, ${y}, ${w}, ${h}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GFRECT/.test(line)) {
+                const args = line.match(/GFRECT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const w = this.transformExpr(args[2]);
+                const h = this.transformExpr(args[3]);
+                const color = args[4] ? this.transformExpr(args[4]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.fillRect(${x}, ${y}, ${w}, ${h}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GCIRCLE/.test(line)) {
+                const args = line.match(/GCIRCLE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const r = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                const width = args[4] ? this.transformExpr(args[4]) : 1;
+                js += `${this.indent()}Modules.gfx.drawCircle(${x}, ${y}, ${r}, ${color}, ${width});\n`;
+                continue;
+            }
+
+            if (/^GFCIRCLE/.test(line)) {
+                const args = line.match(/GFCIRCLE\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const r = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                js += `${this.indent()}Modules.gfx.fillCircle(${x}, ${y}, ${r}, ${color});\n`;
+                continue;
+            }
+
+            if (/^GTEXT/.test(line)) {
+                const args = line.match(/GTEXT\s+(.+)/)[1].split(",").map(a => a.trim());
+                const x = this.transformExpr(args[0]);
+                const y = this.transformExpr(args[1]);
+                const text = this.transformExpr(args[2]);
+                const color = args[3] ? this.transformExpr(args[3]) : '"#00ff00"';
+                const size = args[4] ? this.transformExpr(args[4]) : 16;
+                js += `${this.indent()}Modules.gfx.drawText(${x}, ${y}, ${text}, ${color}, ${size});\n`;
+                continue;
+            }
+
+            // ===== FALLBACK =====
+            if (!handled) {
+                js += `${this.indent()}// Unknown: ${line}\n`;
+            }
+        }
+
+        this.indentLevel--;
+        js += "})();\n";
+        return js;
+    }
+
+    // ===== FIXED EXPRESSION =====
+    transformExpr(expr) {
+        expr = expr.trim();
+
+        // CALL → await
+        expr = expr.replace(/CALL (\w+) WITH (.+)/g, (_, fn, args) => {
+            return `await ${fn}(${args})`;
+        });
+
+        // LENGTH
+        expr = expr.replace(/LENGTH (\w+)/g, (_, name) => `${name}.length`);
+
+        // FIXED ACCESS (non-greedy)
+        expr = expr.replace(/(\w+)\s+AT\s+([^\s]+)/g, (_, arr, idx) => `${arr}[${idx}]`);
+
+        // LIST
+        expr = expr.replace(/LIST (.+)/g, (_, items) => `[${items}]`);
+        expr = expr.replace(/\bLIST\b/g, "[]");
+
+        // INPUT
+        expr = expr.replace(/ISDOWN\s+(".*?")/g, (_, key) => `wplenv.isKeyDown(${key})`);
+
+        return expr;
+    }
+
+    transformPrint(expr) {
+        let parts = [];
+        let buffer = "";
+        let inString = false;
+
+        for (let c of expr) {
+            if (c === '"') {
+                inString = !inString;
+                buffer += c;
+                continue;
+            }
+
+            if (!inString && c === " ") {
+                if (buffer) {
+                    parts.push(buffer);
+                    buffer = "";
+                }
+                continue;
+            }
+
+            buffer += c;
+        }
+
+        if (buffer) parts.push(buffer);
+
+        return parts.join(" + ");
+    }
 }
 
-let woplcompjs = new WOPLCOMPJS();
+//let woplcompjs = new WOPLCOMPJS();
+// test code
 const ccode = `
 LET A = 10
 LET B = 20
@@ -3087,9 +3712,9 @@ ELSE
     PRINT "Small"
 END
 
-ITER 1 TO 10 WITH I
+ITER 1 TO 100 WITH I
     !PRINT "Loop: " I
-    ITER 1 TO 10 WITH J
+    ITER 1 TO 20 WITH J
         PRINT "Loop: J: " J " I: " I
     END
 END
@@ -3113,12 +3738,12 @@ PRINT LST
 `;
 
 // run it
-const js = woplcompjs.compile(ccode);
+/*const js = woplcompjs.compile(ccode);
 console.log(js);
 
 // run it
 new Function(js)();
-
+*/
 
 /*
 // reimplementation of wpl with byte code compilation support:
@@ -4061,7 +4686,8 @@ class Loader {
         { name: "date", key: "date", classRef: DateUtils },
         { name: "random", key: "random", classRef: RandomUtils },
         { name: "net", key: "net", classRef: Network },
-        { name: "wpl", key: "wpl", classRef: WebOSPLang },
+        { name: "oldwpl", key: "oldwpl", classRef: WebOSPLang },
+        { name: "wpl", key: "wpl", classRef: WOPLCOMPJS },
         { name: "gfx", key: "gfx", classRef: Graphics }
     ];
 
@@ -5436,6 +6062,40 @@ class Commands{
             return [`Fetch failed: ${err.message}`, "red", ""];
         }
     }
+    async oldwpl(args) {
+        if (!Modules.wpl) {
+            return ["oldwpl module not loaded (need: oldwpl)", "red", ""];
+        }
+        if (!args[0]) {
+            return ["Usage: wpl <filename>", "yellow", ""];
+        }
+        let filename = args[0];
+        let output = OS.readFile(filename);
+
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        }
+
+        // executable files in webos pl need to have '#wpl' in the first line
+        if(output[0].split("\n")[0] !== "#wpl"){
+            return ["File is not executable!", "red", ""];
+        }
+
+        let wplcode = output[0].slice(1);
+        
+        // for now execute directly
+        let wplout = await Modules.oldwpl.run(wplcode, true);
+
+        console.log(wplout);
+
+        if(!Modules.oldwpl.error){
+            // output already done directly inside interpreter
+            return ["File executed successfully!"/*wplout*/, "green", ""];
+        } else {
+            return ["File executed with errors!", "red", ""];
+        }
+    }
+
     async wpl(args) {
         if (!Modules.wpl) {
             return ["wpl module not loaded (need: wpl)", "red", ""];
@@ -5458,16 +6118,30 @@ class Commands{
         let wplcode = output[0].slice(1);
         
         // for now execute directly
-        let wplout = await Modules.wpl.run(wplcode, true);
+        //let wplout = await Modules.wpl.run(wplcode, true);
 
-        console.log(wplout);
 
-        if(!Modules.wpl.error){
+        //let woplcompjs = new WOPLCOMPJS();
+        const js = Modules.wpl.compile(wplcode);
+        console.log(js);
+
+        // run it
+        try {
+            await new Function(js)(wplenv);
+        } catch (err) {
+            console.error("Error executing WPL code:", err);
+            return ["File executed with errors! Error: "+err.message, "red", ""];
+        }
+        console.log("WPL code executed!!!!!!!!!!!!!!");
+        
+        //console.log(wplout);
+
+        //if(!Modules.wpl.error){
             // output already done directly inside interpreter
-            return ["File executed successfully!"/*wplout*/, "green", ""];
+        /*    return ["File executed successfully!", "green", ""];
         } else {
             return ["File executed with errors!", "red", ""];
-        }
+        }*/
     }
 
     autoload(args){
@@ -5543,6 +6217,7 @@ class CommandManager {
             history: commands.history,
             ping: commands.ping,
             fetch: commands.fetch,
+            oldwpl: commands.oldwpl,
             wpl: commands.wpl,
             autoload: commands.autoload,
             unautoload: commands.unautoload
