@@ -32,7 +32,8 @@ tasks:
 - inconsistency!!!: maybe add START to ITER
 - loop control: add step maybe: ITER 10 TO 1 STEP 2 WITH I START
 - done: add break, continue to loop - added and working
-- add lists
+- partially done: add lists
+- add command line args
 add inc, dec command for simple integer manipulation instead of LET X = X+1
 - comments added
 
@@ -46,6 +47,11 @@ add inc, dec command for simple integer manipulation instead of LET X = X+1
 - partially works: also add lists to expressions, so they work for e.g.: print
 maybe move functions to evalExpr, so they can be directly called like follows:
 LET RES = ADD 1,2,3,A,B, ...
+- maybe also add builtin random functions for games
+- many new features and checks were added to expression functions, maybe affects performance!
+: expr checker still not good :(
+- ctrl-Z not working in editor
+- allow functions to modify outer variables
 
 - def add at some point:
 string functions: SPLIT, JOIN, SUBSTR, toUpper

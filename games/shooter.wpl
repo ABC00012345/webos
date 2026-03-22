@@ -1,0 +1,215 @@
+#wpl
+
+# init
+EXEC load gfx
+IF GUSED THEN
+        GCLOSE
+END
+GINIT
+EXEC load random
+
+# --- SETTINGS ---
+LET WIDTH = 800
+LET HEIGHT = 600
+
+LET playerX = 400
+LET playerY = 520
+LET playerSpeed = 10
+
+LET bulletsX = LIST
+LET bulletsY = LIST
+LET bulletSpeed = 15
+
+LET enemiesX = LIST
+LET enemiesY = LIST
+LET enemiesHealth = LIST
+LET enemySpeed = 3
+
+LET spawnTimer = 0
+LET spawnRate = 40
+
+LET SCORE = 0
+LET GAMEOVER = false
+
+LET ammo = 3
+LET maxAmmo = 3
+LET reloadTimer = 0
+LET reloadRate = 12
+
+LET maxEnemyHealth = 3
+LET incEnemyHealthInXTimers = 20
+
+# --- FUNCTIONS ---
+
+FUNCTION SpawnEnemy PARAM A START
+    LET rx = EXEC randint 0 39
+    LET px = rx * 20
+    APPEND px TO enemiesX
+    APPEND -40 TO enemiesY
+    APPEND maxEnemyHealth TO enemiesHealth
+    RETURN 1
+END
+
+FUNCTION MoveEnemies PARAM A START
+    ITER 0 TO LENGTH enemiesX-1 WITH I
+        SET enemiesY AT I TO enemiesY AT I + enemySpeed
+    END
+    RETURN 1
+END
+
+FUNCTION CleanupBullets PARAM A START
+    ITER LENGTH bulletsX-1 TO 0 STEP -1 WITH I
+        IF bulletsY AT I < -20 THEN
+            REMOVE INDEX I FROM bulletsX
+            REMOVE INDEX I FROM bulletsY
+        END
+    END
+    RETURN 1
+END
+
+FUNCTION MoveBullets PARAM A START
+    ITER 0 TO LENGTH bulletsX-1 WITH I
+        SET bulletsY AT I TO bulletsY AT I - bulletSpeed
+    END
+    RETURN 1
+END
+
+FUNCTION CheckBulletHits PARAM A START
+    # Returns SCORE_INCREMENT only, does not touch globals directly
+    LET scoreIncrement = 0
+
+    ITER LENGTH bulletsX-1 TO 0 STEP -1 WITH BI
+        LET bx = bulletsX AT BI
+        LET by = bulletsY AT BI
+        LET hit = 0
+
+        ITER LENGTH enemiesX-1 TO 0 STEP -1 WITH EI
+            LET ex = enemiesX AT EI
+            LET ey = enemiesY AT EI
+            LET health = enemiesHealth AT EI
+
+            IF bx < ex + 40 && bx + 5 > ex && by < ey + 40 && by + 10 > ey THEN
+                LET health = health - 1
+                IF health <= 0 THEN
+                    REMOVE INDEX EI FROM enemiesX
+                    REMOVE INDEX EI FROM enemiesY
+                    REMOVE INDEX EI FROM enemiesHealth
+                    LET scoreIncrement = scoreIncrement + 1
+                ELSE
+                    SET enemiesHealth AT EI TO health
+                END
+                LET hit = 1
+                BREAK
+            END
+        END
+
+        IF hit == 1 || by + 10 < 0 THEN
+            REMOVE INDEX BI FROM bulletsX
+            REMOVE INDEX BI FROM bulletsY
+        END
+    END
+
+    RETURN scoreIncrement
+END
+
+FUNCTION CheckPlayerCollision PARAM A START
+    LET collided = 0
+    ITER 0 TO LENGTH enemiesX-1 WITH I
+        LET ex = enemiesX AT I
+        LET ey = enemiesY AT I
+        IF playerX - ex < 40 && playerX - ex > -40 THEN
+            IF playerY - ey < 40 && playerY - ey > -40 THEN
+                LET collided = 1
+            END
+        END
+    END
+    RETURN collided
+END
+
+# --- MAIN LOOP ---
+WHILE GAMEOVER == false START
+    GCLEAR
+
+    # --- INPUT ---
+    IF ISDOWN "ArrowLeft" THEN
+        LET playerX = playerX - playerSpeed
+    END
+    IF ISDOWN "ArrowRight" THEN
+        LET playerX = playerX + playerSpeed
+    END
+
+    # --- SHOOTING ---
+    IF ISDOWN " " THEN
+        IF ammo > 0 THEN
+            APPEND playerX+18 TO bulletsX
+            APPEND playerY TO bulletsY
+            LET ammo = ammo - 1
+        END
+    END
+
+    # --- AUTO RELOAD ---
+    LET reloadTimer = reloadTimer + 1
+    IF reloadTimer >= reloadRate THEN
+        # inc enemy health also in here, is faster
+        LET incEnemyHealthInXTimers = incEnemyHealthInXTimers-1
+        IF incEnemyHealthInXTimers == 0 THEN
+                LET incEnemyHealthInXTimers = 20
+                LET maxEnemyHealth = maxEnemyHealth+1
+                # also update player ammo
+                LET maxAmmo = maxEnemyHealth
+        END
+        LET reloadTimer = 0
+        IF ammo < maxAmmo THEN
+            LET ammo = ammo + 1
+        END
+    END
+
+    # --- Keep player in bounds ---
+    IF playerX < 0 THEN
+        LET playerX = 0
+    END
+    IF playerX > WIDTH - 40 THEN
+        LET playerX = WIDTH - 40
+    END
+
+    # --- SPAWN ENEMIES ---
+    LET spawnTimer = spawnTimer + 1
+    IF spawnTimer >= spawnRate THEN
+        LET spawnTimer = 0
+        LET TMP = CALL SpawnEnemy WITH 0
+    END
+
+    # --- MOVE ENTITIES ---
+    LET TMP = CALL MoveEnemies WITH 0
+    LET TMP = CALL MoveBullets WITH 0
+    LET TMP = CALL CleanupBullets WITH 0
+    LET TMP = CALL CheckBulletHits WITH 0
+    LET SCORE = SCORE + (TMP * maxEnemyHealth)
+
+    # --- CHECK COLLISION ---
+    LET COLL = CALL CheckPlayerCollision WITH 0
+    IF COLL == 1 THEN
+        LET GAMEOVER = true
+    END
+
+    # --- DRAW ---
+    GFRECT playerX, playerY, 40, 40, "cyan"
+    ITER 0 TO LENGTH bulletsX-1 WITH I
+        GFRECT bulletsX AT I, bulletsY AT I, 5, 10, "yellow"
+    END
+    ITER 0 TO LENGTH enemiesX-1 WITH I
+        GFRECT enemiesX AT I, enemiesY AT I, 40, 40, "red"
+        GTEXT enemiesX AT I +15, enemiesY AT I -5, enemiesHealth AT I
+    END
+
+    GTEXT 10, 20, "GALACTIC SHOOTER", "white", 24
+    GTEXT 10, 50, "SCORE: " + SCORE, "white", 24
+    GTEXT 10, 80, "AMMO: " + ammo, "white", 24
+    GTEXT 10, 110, "EnemyHP: " + maxEnemyHealth, "white", 24
+    SLEEP 20
+END
+
+GCLEAR
+GTEXT 300, 300, "GAME OVER!", "red", 48
+GTEXT 300, 360, "Final Score: " + SCORE, "yellow", 32
+SLEEP 3000

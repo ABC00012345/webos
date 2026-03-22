@@ -56,6 +56,8 @@ Commands:
 - fetch: Save response data of server to file
 - run: executes a script
 - wpl: executes a file of the webos programming language
+- autoload: sets a module as autoload
+- unautoload: disables autoload for a module
 
 Important information:
 - autoload modules: create a file named autoload in directory /modules/<modulename>/
@@ -410,6 +412,9 @@ class WebOSPLang {
         this.globLine;
         this.outputDirectly = false;
         this.setInterruptExecutionFlag = this.setInterruptExecutionFlag.bind(this);
+        this.keydownHandler = this.keydownHandler.bind(this);
+        this.keyupHandler = this.keyupHandler.bind(this);
+        this.keys = {};
         this.initCmds();
     }
 
@@ -433,13 +438,37 @@ class WebOSPLang {
         this.errorAlreadyReported = false;
         this.breakLoop = false;
         this.contLoop = false;
+
+        // store key presses
+        this.keys = {};
+
         document.addEventListener('keydown', this.setInterruptExecutionFlag);
+        document.addEventListener('keydown', this.keydownHandler);
+        document.addEventListener('keyup', this.keyupHandler);
+
         const lines = code.split("\n").map(l => l.trim()).filter(l => l.length > 0);
         let [out] = await this.executeBlock(lines, 0);
         console.log(this.vars);
         console.log(this.functions);
         document.removeEventListener('keydown', this.setInterruptExecutionFlag);
+
+        document.removeEventListener('keydown', this.keydownHandler);
+        document.removeEventListener('keyup', this.keyupHandler);
         return this.globalOutput;
+    }
+
+    keydownHandler(e){
+        this.keys[e.key] = true;
+        console.log("Key down:", e.key);  // Debug
+    }
+
+    keyupHandler(e){
+        this.keys[e.key] = false;
+        console.log("Key up:", e.key);  // Debug
+    }
+
+    iskeyDown(key) {
+        return !!this.keys[key];
     }
 
     setInterruptExecutionFlag(){
@@ -588,7 +617,7 @@ class WebOSPLang {
             else if (line.startsWith("GCLOSE")) {
                 this.handleGClose();
             }
-            else if (line.startsWith("GCLEAR ")) {
+            else if (line.startsWith("GCLEAR")) {
                 this.handleGClear(line);
             }
             else if (line.startsWith("GPIXEL ")) {
@@ -611,6 +640,9 @@ class WebOSPLang {
             }
             else if (line.startsWith("GTEXT ")) {
                 this.handleGText(line);
+            }
+            else if (line.startsWith("SLEEP ")) {
+                await this.handleSleep(line);
             }
 
             i++;
@@ -641,6 +673,42 @@ class WebOSPLang {
         }
         //this.globalOutput+=output;
         return [output, i, returnValue];
+    }
+
+    /*readChar() {
+        return new Promise(resolve => {
+            function handler(e) {
+            // Remove listener so it only fires once
+            window.removeEventListener("keydown", handler);
+
+            // e.key is already the character (or key name)
+            resolve(e.key);
+            }
+
+            window.addEventListener("keydown", handler);
+        });
+    }*/
+
+    async handleSleep(line){
+        const msMatch = line.match(/SLEEP\s+(.+)/);
+        if (msMatch) {
+            let ms = this.evalExpr(msMatch[1], true);
+            ms = parseInt(ms);
+            const start = Date.now();
+            
+            while (Date.now() - start < ms) {
+                // Yield control back to event loop every 16ms (about 60fps)
+                await new Promise(resolve => setTimeout(resolve, 16));
+                
+                // need to test if it works here
+                await new Promise(requestAnimationFrame);
+
+                // Check for interrupt during sleep
+                if (this.interruptExecution) {
+                    break;
+                }
+            }
+        }
     }
 
     async handleInput(line) {
@@ -817,7 +885,7 @@ class WebOSPLang {
         console.log("var name: "+name+" expr: "+ expr);
 
         // Handle LIST creation
-        if (expr.startsWith("LIST")) {
+        /*if (expr.startsWith("LIST")) {
             const listMatch = expr.match(/LIST\s*(.*)$/);
             if (listMatch[1].trim() === "") {
                 // Empty list
@@ -829,7 +897,7 @@ class WebOSPLang {
             }
             console.log("Created list:", name, "=", this.vars[name]);
             return;
-        }
+        }*/
 
         /// ALL THESE METHODS WERE MOVED TO evalExpr !
         // access list element
@@ -930,11 +998,39 @@ class WebOSPLang {
     // ----- PRINT / EXEC -----
     async handleExec(line) {
         const cmd = line.substring(5).trim();
+
+        // still doesnt handle quotes !!!
+        let tmpExpr = ""
+        let evaluatedCmd = "";
+        let addToExpr = false;
+        for(let i = 0; i<cmd.length;i++){
+            if(cmd[i] == ")"){
+                addToExpr = false;
+                evaluatedCmd += this.evalExpr(tmpExpr);
+            }
+            if(addToExpr){
+                tmpExpr += cmd[i];
+            } else {
+                if(cmd[i] != ")" && cmd[i] != "(") evaluatedCmd += cmd[i];
+            }
+            if(cmd[i] == "("){
+                addToExpr = true;
+            }
+        }
+        console.log("cmd after eval: "+evaluatedCmd);
+        //this.throwError("cmd after eval: "+evaluatedCmd);
         //if (!this.execHandler) return "(ERR: EXEC not supported)";
-        let res = await commandManager.executeCommand(cmd);
-        res = res[0];
-        console.log(res);
+        let res = await commandManager.executeCommand(evaluatedCmd);
+        res = res[0].toString();
+        console.log("exec res: "+res);
         res = res.replaceAll("\"","\\\"");
+
+        // added: use here also evalExpr to get correct type of command result, for example "randint 1 10" should be an int, so raw=true flag is used to get raw type like for variables
+        // but first make it a string like if defined as LET str = "<output>", the rest is handled by evalExpr(), it automatically detectes the type
+        //res = "\""+res+"\"";
+        //res = this.evalExpr(res,true);
+        if(!isNaN(res)){ return Number(res) };
+
 
         return res;
     }
@@ -1040,8 +1136,15 @@ class WebOSPLang {
                 return;
             }
             
-            const index = this.evalExpr(match[1], true);
+            let index = this.evalExpr(match[1], true);
             const listName = match[2];
+
+            index = parseInt(index);
+
+            if (isNaN(index)) {
+                this.throwError("(ERR: Index must be a number)");
+                return;
+            }
             
             if (!Array.isArray(this.vars[listName])) {
                 this.throwError(`(ERR: ${listName} is not a list)`);
@@ -1152,7 +1255,7 @@ class WebOSPLang {
     // need to handle lists in expressions. dont treat them like variables, for example for PRINT: PRINT LST should print the list like this (1,2,3) ...
 
     // ----- EXPRESSION EVALUATOR -----
-    evalExpr(expr, raw = false) {
+    /*evalExpr(expr, raw = false) {
         if (raw) {
             // RAW MODE: For LET assignments - return the actual value
             return this._evaluateExpression(expr);
@@ -1181,7 +1284,7 @@ class WebOSPLang {
         if (expr === 'true') return true;
         if (expr === 'false') return false;
         
-        // ⚡ NEW: Handle direct variable references (including lists)
+        // NEW: Handle direct variable references (including lists)
         // Check if expr is just a simple variable name
         if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
             if (this.vars[expr] !== undefined) {
@@ -1193,6 +1296,8 @@ class WebOSPLang {
         expr = this._expandListOperations(expr);
 
         expr = this._expandGraphicsOperations(expr);
+
+        expr = this._expandOtherOperations(expr);
         
         // Handle complex expressions with variables and operators
         return this._evaluateComplexExpression(expr);
@@ -1202,7 +1307,7 @@ class WebOSPLang {
 
     _expandListOperations(expr) {
         let expanded = expr;
-        
+
         // 1. Handle FIND first (before plain IN)
         // FIND <value> IN <listname> → returns index or -1
         expanded = expanded.replace(/FIND\s+(.+?)\s+IN\s+(\w+)/g, (match, valueExpr, listName) => {
@@ -1289,11 +1394,14 @@ class WebOSPLang {
     }
 
     _expandGraphicsOperations(expr){
-        let expanded = expr
+        let expanded = expr;
 
         if (!Modules.gfx) {
+            expanded = expanded.replace(/GUSED/g, () => {
+                return "false";
+            });
             this.throwError("(ERR: Graphics module not loaded)");
-            return;
+            return expanded;
         }
 
         // maybe do the dame for function names if implementing,
@@ -1305,6 +1413,287 @@ class WebOSPLang {
         });
 
         return expanded
+    }
+
+    _expandOtherOperations(expr){
+        let expanded = expr;
+        
+        // Handle ISDOWN "key" or ISDOWN key (if it's a variable)
+        expanded = expanded.replace(/ISDOWN\s+("(?:[^"]*)"|[A-Za-z_][A-Za-z0-9_]*)/g,
+            (match, keyExpr) => {
+                const key = this._evaluateExpression(keyExpr);
+                const isPressed = this.iskeyDown(key);
+                return isPressed.toString();
+            }
+        );
+        
+        return expanded;
+    }*/
+
+    evalExpr(expr, raw = false) {
+        if (raw) {
+            return this._evaluateExpression(expr);
+        } else {
+            return this._evaluateForOutput(expr);
+        }
+    }
+
+    _evaluateExpression(expr) {
+        expr = expr.trim();
+        
+        // Handle string literals FIRST
+        if ((expr.startsWith('"') && expr.endsWith('"')) || 
+            (expr.startsWith("'") && expr.endsWith("'"))) {
+            return expr.slice(1, -1);
+        }
+        
+        // Handle numbers
+        if (!isNaN(expr)) {
+            return expr.includes('.') ? parseFloat(expr) : parseInt(expr, 10);
+        }
+        
+        // Handle booleans
+        if (expr === 'true') return true;
+        if (expr === 'false') return false;
+        
+        // Handle direct variable references
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
+            if (this.vars[expr] !== undefined) {
+                return this.vars[expr];
+            }
+            // If it's not a variable but might be a special function like GUSED, continue to expansion
+        }
+        
+        // Expand special operations and functions
+        const expandedExpr = this._expandOperations(expr);
+        
+        // If expansion changed the expression, evaluate the result
+        if (expandedExpr !== expr) {
+            return this._evaluateComplexExpression(expandedExpr);
+        }
+        
+        // Otherwise, evaluate as complex expression
+        return this._evaluateComplexExpression(expr);
+    }
+
+    _evaluateForOutput(expr) {
+        // For PRINT statements, we need to handle string concatenation properly
+        const result = this._evaluateExpression(expr);
+        return String(result);
+    }
+
+    _expandOperations(expr) {
+        // First expand special functions that should NEVER be inside strings
+        let expanded = this._expandGraphicsOperations(expr);
+        expanded = this._expandListOperations(expanded);
+        expanded = this._expandOtherOperations(expanded);
+        
+        return expanded;
+    }
+
+    _expandGraphicsOperations(expr) {
+        let expanded = expr;
+
+        if (!Modules.gfx) {
+            // Only replace GUSED when it's not inside quotes
+            expanded = expanded.replace(/GUSED(?=\s|$|\))/g, (match, offset) => {
+                if (this._isInsideQuotes(expanded, offset)) return match;
+                return "false";
+            });
+            return expanded;
+        }
+
+        expanded = expanded.replace(/GUSED(?=\s|$|\))/g, (match, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            return Modules.gfx.isUsed().toString();
+        });
+
+        return expanded;
+    }
+
+    _expandListOperations(expr) {
+        let expanded = expr;
+
+
+        // Handle LIST creation - only when not in quotes
+        expanded = expanded.replace(/LIST\s*(.*)$/g, (match, valuesStr, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            
+            if (valuesStr.trim() === "") {
+                // Empty list
+                return "[]";
+            } else {
+                // List with values: LIST 1, 2, 3
+                // We need to evaluate each value and create array literal
+                const values = valuesStr.split(",").map(v => {
+                    const evaluated = this._evaluateExpression(v.trim());
+                    // Properly format the value for the array literal
+                    if (typeof evaluated === 'string') {
+                        return `"${evaluated.replace(/"/g, '\\"')}"`;
+                    } else if (typeof evaluated === 'boolean') {
+                        return evaluated.toString();
+                    } else if (evaluated === null || evaluated === undefined) {
+                        return 'null';
+                    }
+                    return evaluated.toString();
+                });
+                return `[${values.join(', ')}]`;
+            }
+        });
+
+
+        // Handle FIND - only when not in quotes
+        expanded = expanded.replace(/FIND\s+(.+?)\s+IN\s+(\w+)/g, (match, valueExpr, listName, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return '-1';
+            }
+            
+            const value = this._evaluateExpression(valueExpr.trim());
+            return this.vars[listName].indexOf(value).toString();
+        });
+        
+        // Handle LENGTH
+        expanded = expanded.replace(/LENGTH\s+(\w+)/g, (match, listName, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return '0';
+            }
+            return this.vars[listName].length.toString();
+        });
+        
+        // Handle AT access
+        expanded = expanded.replace(/(\w+)\s+AT\s+([\w\d\-+\*\/\(\)]+)/g, (match, listName, indexExpr, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return 'null';
+            }
+            
+            let index = this._evaluateExpression(indexExpr.trim());
+
+            index = Number(index);
+
+            if (Number.isNaN(index)) {
+                this.throwError(`(ERR: Index must be a number: got "${index}")`);
+                return 'null';
+            }
+
+            //this.throwError(expanded+", "+index + ", type: "+ typeof index);
+            if (typeof index !== 'number') {
+                //this.throwError(expanded+", "+index + ", type: "+ typeof index);
+                this.throwError(`(ERR: Index must be a number)`);
+                return 'null';
+            }
+            
+            const list = this.vars[listName];
+            const actualIndex = index < 0 ? list.length + index : index;
+            
+            if (actualIndex < 0 || actualIndex >= list.length) {
+                this.throwError(`(ERR: Index ${index} out of bounds for list ${listName})`);
+                return 'null';
+            }
+            
+            const value = list[actualIndex];
+            
+            // Return value in a format safe for eval
+            if (typeof value === 'string') {
+                return `"${value.replace(/"/g, '\\"')}"`;
+            } else if (typeof value === 'boolean') {
+                return value.toString();
+            } else if (value === null || value === undefined) {
+                return 'null';
+            }
+            return value.toString();
+        });
+        
+        // Handle IN checks
+        expanded = expanded.replace(/(.+?)\s+IN\s+(\w+)/g, (match, valueExpr, listName, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            
+            if (valueExpr.trim().startsWith('FIND')) {
+                return match;
+            }
+            
+            if (!Array.isArray(this.vars[listName])) {
+                this.throwError(`(ERR: ${listName} is not a list)`);
+                return 'false';
+            }
+            
+            const value = this._evaluateExpression(valueExpr.trim());
+            return this.vars[listName].includes(value).toString();
+        });
+        
+        return expanded;
+    }
+
+    _expandOtherOperations(expr) {
+        let expanded = expr;
+        
+        // Handle ISDOWN
+        expanded = expanded.replace(/ISDOWN\s+("(?:[^"]*)"|[A-Za-z_][A-Za-z0-9_]*)/g,
+            (match, keyExpr, offset) => {
+                // Check if we're inside quotes using the match offset
+                if (this._isInsideQuotes(expanded, offset)) {
+                    return match; // Return unchanged if inside quotes
+                }
+                
+                // Evaluate the key expression (could be a string literal or variable)
+                const key = this._evaluateExpression(keyExpr);
+                const isPressed = this.iskeyDown(key);
+                return isPressed.toString();
+            }
+        );
+        
+        return expanded;
+    }
+
+    // Improved helper to check if position is inside quotes
+    /*_isInsideQuotes(expr, position) {
+        if (position === undefined) return false;
+        
+        const before = expr.substring(0, position);
+        const singleQuotesBefore = (before.match(/'/g) || []).length;
+        const doubleQuotesBefore = (before.match(/"/g) || []).length;
+        
+        // If odd number of quotes before, we're inside quotes
+        return (singleQuotesBefore % 2 === 1) || (doubleQuotesBefore % 2 === 1);
+    }*/
+
+    _isInsideQuotes(expr, position) {
+        if (position === undefined) return false;
+        
+        const before = expr.substring(0, position);
+        
+        // Count unescaped quotes before this position
+        let singleQuotesBefore = 0;
+        let doubleQuotesBefore = 0;
+        let escaped = false;
+        
+        for (let i = 0; i < before.length; i++) {
+            const char = before[i];
+            
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            
+            if (char === '\\') {
+                escaped = true;
+            } else if (char === "'") {
+                singleQuotesBefore++;
+            } else if (char === '"') {
+                doubleQuotesBefore++;
+            }
+        }
+        
+        // If odd number of quotes before, we're inside quotes
+        return (singleQuotesBefore % 2 === 1) || (doubleQuotesBefore % 2 === 1);
     }
 
     // Helper function to evaluate complex expressions
@@ -1417,21 +1806,21 @@ class WebOSPLang {
         let currentBlock = thenBlock;
         let i = start + 1;
         let foundElse = false;
-        let ifDepth = 0; // Track nested IF statements
+        let depth = 0; // Track nested structures (IF, WHILE, ITER)
         
         while (i < lines.length) {
             const line = lines[i];
             
-            // Check for nested IF statements
-            if (line.startsWith("IF ")) {
-                ifDepth++;
+            // Check for nested structures
+            if (line.startsWith("IF ") || line.startsWith("WHILE ") || line.startsWith("ITER ")) {
+                depth++;
             }
             
             // Check for END statements
             if (line === "END") {
-                if (ifDepth > 0) {
-                    // This END closes a nested IF
-                    ifDepth--;
+                if (depth > 0) {
+                    // This END closes a nested structure
+                    depth--;
                 } else {
                     // This END closes our current IF
                     break;
@@ -1439,7 +1828,7 @@ class WebOSPLang {
             }
             
             // Check for ELSE at our current level (not nested)
-            if (line === "ELSE" && ifDepth === 0) {
+            if (line === "ELSE" && depth === 0) {
                 foundElse = true;
                 currentBlock = elseBlock;
                 i++;
@@ -1461,10 +1850,11 @@ class WebOSPLang {
             console.log("reached!! "+i+" out: "+out)
             return [out, i];
         } else if (foundElse) {
-            // Only execute else block if it exists
+            // Only execute else block if it exists AND the condition was false
             const [out] = await this.executeBlock(elseBlock, 0);
             return [out, i];
         } else {
+            // If condition is false and no ELSE block, just skip to the END
             return ["", i];
         }
     }
@@ -1481,7 +1871,7 @@ class WebOSPLang {
         while (i < lines.length) {
             const line = lines[i];
             
-            // Check for nested structures (WHILE, IF, ITER, etc.)
+            // Check for nested structures (WHILE, IF, ITER)
             if (line.startsWith("WHILE ") || line.startsWith("IF ") || line.startsWith("ITER ")) {
                 depth++;
             }
@@ -1489,10 +1879,8 @@ class WebOSPLang {
             // Check for END statements
             if (line === "END") {
                 if (depth > 0) {
-                    // This END closes a nested structure
                     depth--;
                 } else {
-                    // This END closes our current WHILE loop
                     break;
                 }
             }
@@ -1503,8 +1891,7 @@ class WebOSPLang {
         
         // Now execute the while loop
         let iterations = 0;
-        //// IMPORTANT: maybe we add later a setting that can be defined like: #maxIter 10000000 at top of the file
-        const maxIterations = 10000; // Safety limit to prevent infinite loops
+        const maxIterations = 100000000; // Safety limit to prevent infinite loops
         
         let last_update = performance.now();
         let update_time_ms = 32;
@@ -1518,7 +1905,6 @@ class WebOSPLang {
             console.log("While condition:", condPart, "=", condValue, "TYPE:", typeof condValue);
             
             // render frame, also important for ctrl-c to work
-            // maybe do after every x milliseconds to avoid overload
             let cur_time = performance.now();
             if(cur_time - last_update > update_time_ms){
                 last_update = cur_time;
@@ -1539,24 +1925,19 @@ class WebOSPLang {
             }
 
             // Check for break flag after executing until break/cont in the body
-            // Check if BREAK was encountered during body execution
             if (this.breakLoop) {
                 console.log("BREAK detected in loop - breaking");
                 this.breakLoop = false;
                 break;
             }
             
-            // everything done, already skipped remaining body after continue
             if (this.contLoop) {
                 console.log("CONTINUE detected in loop - continuing");
                 this.contLoop = false;
-                //iterations++;
-                //continue;
             }
             
             // If there was a RETURN in the loop body (in function context)
             if (returnValue !== null) {
-                // Handle return from function
                 return [out, i, returnValue];
             }
             
@@ -1844,16 +2225,12 @@ class WebOSPLang {
     // ----- FUNCTION DECL -----
     handleFunction(lines, start) {
         const header = lines[start];
-
-
         
-        // Updated regex to make PARAM part optional
         const match = header.match(/FUNCTION\s+(\w+)(?:\s+PARAM\s+(.+))?\s+START/);
         if (!match) {
             console.error("Invalid function declaration:", header);
             this.throwError("CRITICAL ERROR (cannot continue!): Invalid function declaration!");
-            // if continuing here and returning start, the hanbdleFunction function will be called all over again because the executeBlock function stucks at this index with the invalid function header
-            return start; // or handle error appropriately
+            return start;
         }
 
         const name = match[1];
@@ -1863,9 +2240,28 @@ class WebOSPLang {
 
         let i = start + 1;
         let body = [];
+        let depth = 0; // Add depth tracking for nested structures
 
-        while (i < lines.length && lines[i] !== "END") {
-            body.push(lines[i]);
+        while (i < lines.length) {
+            const line = lines[i];
+            
+            // Check for nested structures
+            if (line.startsWith("FUNCTION ") || line.startsWith("IF ") || line.startsWith("WHILE ") || line.startsWith("ITER ")) {
+                depth++;
+            }
+            
+            // Check for END statements
+            if (line === "END") {
+                if (depth > 0) {
+                    // This END closes a nested structure
+                    depth--;
+                } else {
+                    // This END closes our current FUNCTION
+                    break;
+                }
+            }
+            
+            body.push(line);
             i++;
         }
 
@@ -1874,11 +2270,12 @@ class WebOSPLang {
             body
         };
 
-        return i;
+        return i + 1; // Skip the END line
     }
 
+
     // ----- CALL Add WITH A,B -----
-    async handleCall(line) {
+    /*async handleCall(line) {
         const match = line.match(/CALL\s+(\w+)(?:\s+WITH\s+(.+))?/);
         if (!match) return;
 
@@ -1918,6 +2315,129 @@ class WebOSPLang {
         } finally {
             // Always restore original scope
             this.vars = oldVars;
+        }
+
+        return returnValue;
+    }*/
+
+    splitFunctionArgs(argsStr) {
+        if (!argsStr || argsStr.trim() === '') return [];
+        
+        const args = [];
+        let currentArg = '';
+        let depth = 0; // Parentheses depth counter
+        let inSingleQuote = false;
+        let inDoubleQuote = false;
+        let escaped = false;
+        
+        for (let i = 0; i < argsStr.length; i++) {
+            const char = argsStr[i];
+            
+            // Handle escape sequences
+            if (escaped) {
+                currentArg += char;
+                escaped = false;
+                continue;
+            }
+            
+            if (char === '\\') {
+                escaped = true;
+                currentArg += char;
+                continue;
+            }
+            
+            // Handle quotes (only if not inside parentheses)
+            if (depth === 0) {
+                if (char === "'" && !inDoubleQuote) {
+                    inSingleQuote = !inSingleQuote;
+                    currentArg += char;
+                    continue;
+                }
+                if (char === '"' && !inSingleQuote) {
+                    inDoubleQuote = !inDoubleQuote;
+                    currentArg += char;
+                    continue;
+                }
+            }
+            
+            // Handle parentheses (regardless of quotes)
+            if (char === '(' && !inSingleQuote && !inDoubleQuote) {
+                depth++;
+            } else if (char === ')' && !inSingleQuote && !inDoubleQuote) {
+                depth--;
+            }
+            
+            // Split only when at top level and not in quotes
+            if (char === ',' && depth === 0 && !inSingleQuote && !inDoubleQuote) {
+                args.push(currentArg.trim());
+                currentArg = '';
+            } else {
+                currentArg += char;
+            }
+        }
+        
+        // Don't forget the last argument
+        if (currentArg.trim() !== '') {
+            args.push(currentArg.trim());
+        }
+        
+        return args;
+    }
+
+    // handleCall with global var update support
+    async handleCall(line) {
+        const match = line.match(/CALL\s+(\w+)(?:\s+WITH\s+(.+))?/);
+        if (!match) return;
+
+        const name = match[1];
+        const args = match[2] ? match[2].split(",").map(a => a.trim()) : [];
+        const fn = this.functions[name];
+
+        console.log("FUNC: NAME " + name + " ARGS " + args);
+
+        if (!fn) return "(ERR: Function not found)";
+
+        if (fn.params.length !== args.length) {
+            return "(ERR: Incorrect count of arguments passed)";
+        }
+
+        // Save current scope and create snapshot of existing global variables
+        const oldVars = { ...this.vars };
+        const originalGlobalKeys = new Set(Object.keys(oldVars));
+        
+        // Create new scope with function parameters
+        const functionVars = { ...oldVars };
+        
+        // Set parameters in function scope
+        fn.params.forEach((param, index) => {
+            functionVars[param] = this.evalExpr(args[index], true);
+        });
+
+        // Switch to function scope
+        this.vars = functionVars;
+
+        let returnValue = null;
+
+        try {
+            const [output, nextIndex, funcReturnValue] = await this.executeBlock(fn.body, 0, true);
+            returnValue = funcReturnValue;
+            console.log("Out: " + output + " nI: " + nextIndex + " rv: " + funcReturnValue);
+        } finally {
+            // Always restore original scope, but update existing global variables
+            const currentFunctionVars = this.vars;
+            this.vars = oldVars;
+            
+            // Update only variables that existed in the global scope before the function call
+            for (const key of originalGlobalKeys) {
+                if (currentFunctionVars[key] !== undefined && 
+                    currentFunctionVars[key] !== functionVars[key]) {
+                    // Variable existed globally and was modified in function scope
+                    this.vars[key] = currentFunctionVars[key];
+                }
+            }
+            
+            // Note: New variables created in function scope are automatically discarded
+            // since we restored the oldVars and only updated existing keys
         }
 
         return returnValue;
@@ -2297,6 +2817,7 @@ PRINT "Sub res: " X
 
 
 LET TESTVAL = CALL Test WITH 5,B
+IF C == 30 THEN
 PRINT "TESTVAL:" TESTVAL
 
 LET Z = CALL shit WITH 1,1
@@ -2368,8 +2889,1159 @@ END
 
 # Set value at index
 SET LST AT 2 TO 99               # Change element at index 2
-
 `
+
+
+
+/* WEBOSPL COMPILER -> JS */
+class WOPLCOMPJS {
+    constructor() {
+        this.indentLevel = 0;
+        this.declaredVars = new Set(); // track declared variables
+    }
+
+    indent() {
+        return "    ".repeat(this.indentLevel);
+    }
+
+    compile(code) {
+        const lines = code.split("\n");
+        let js = "";
+        const stack = [];
+
+        for (let rawLine of lines) {
+            let line = rawLine.trim();
+            if (!line || line.startsWith("#")) continue;
+
+            // ===== FUNCTION =====
+            if (line.startsWith("FUNCTION")) {
+                const match = line.match(/^FUNCTION\s+(\w+)\s+PARAM\s+(.+)\s+START$/);
+                if (!match) throw new Error("Invalid FUNCTION syntax: " + line);
+                const name = match[1];
+                const params = match[2].split(",").map(p=>p.trim()).filter(p=>p);
+                js += `${this.indent()}function ${name}(${params.join(", ")}) {\n`;
+                this.indentLevel++;
+                continue;
+            }
+
+            // ===== END =====
+            if (line === "END") {
+                this.indentLevel--;
+                js += `${this.indent()}}\n`;
+                stack.pop();
+                continue;
+            }
+
+            // ===== ELSE =====
+            if (line === "ELSE") {
+                this.indentLevel--;
+                js += `${this.indent()}} else {\n`;
+                this.indentLevel++;
+                continue;
+            }
+
+            // ===== IF =====
+            if (line.startsWith("IF")) {
+                const condition = line.match(/IF (.+) THEN/)[1];
+                js += `${this.indent()}if (${this.transformExpr(condition)}) {\n`;
+                this.indentLevel++;
+                stack.push("IF");
+                continue;
+            }
+
+            // ===== WHILE =====
+            if (line.startsWith("WHILE")) {
+                const condition = line.match(/WHILE (.+) START/)[1];
+                js += `${this.indent()}while (${this.transformExpr(condition)}) {\n`;
+                this.indentLevel++;
+                stack.push("WHILE");
+                continue;
+            }
+
+            // ===== ITER =====
+            if (line.startsWith("ITER")) {
+                const [, start, end, varName] = line.match(/ITER (.+) TO (.+) WITH (\w+)/);
+                js += `${this.indent()}for (let ${varName} = ${this.transformExpr(start)}; ${varName} <= ${this.transformExpr(end)}; ${varName}++) {\n`;
+                this.indentLevel++;
+                stack.push("ITER");
+                continue;
+            }
+
+            // ===== RETURN =====
+            if (line.startsWith("RETURN")) {
+                const expr = line.substring(7);
+                js += `${this.indent()}return ${this.transformExpr(expr)};\n`;
+                continue;
+            }
+
+            // ===== PRINT =====
+            if (line.startsWith("PRINT")) {
+                const expr = line.substring(6);
+                js += `${this.indent()}console.log(${this.transformPrint(expr)});\n`;
+                continue;
+            }
+
+            // ===== LET =====
+            if (line.startsWith("LET")) {
+                // LIST creation
+                if (line.includes("= LIST")) {
+                    const [, name, items] = line.match(/LET (\w+) = LIST(?: (.+))?/);
+                    if (this.declaredVars.has(name)) {
+                        if (items) js += `${this.indent()}${name} = [${items}];\n`;
+                        else js += `${this.indent()}${name} = [];\n`;
+                    } else {
+                        if (items) js += `${this.indent()}let ${name} = [${items}];\n`;
+                        else js += `${this.indent()}let ${name} = [];\n`;
+                        this.declaredVars.add(name);
+                    }
+                    continue;
+                }
+                // normal LET
+                const [, name, value] = line.match(/LET (\w+) = (.+)/);
+                if (this.declaredVars.has(name)) {
+                    js += `${this.indent()}${name} = ${this.transformExpr(value)};\n`;
+                } else {
+                    js += `${this.indent()}let ${name} = ${this.transformExpr(value)};\n`;
+                    this.declaredVars.add(name);
+                }
+                continue;
+            }
+
+            // ===== SET =====
+            if (line.startsWith("SET")) {
+                const [, listName, index, value] = line.match(/SET (\w+) AT (.+) TO (.+)/);
+                js += `${this.indent()}${listName}[${this.transformExpr(index)}] = ${this.transformExpr(value)};\n`;
+                continue;
+            }
+
+            // ===== FALLBACK =====
+            js += `${this.indent()}// Unknown: ${line}\n`;
+        }
+
+        return js;
+    }
+
+    transformExpr(expr) {
+        expr = expr.trim();
+
+        // CALL syntax
+        expr = expr.replace(/CALL (\w+) WITH (.+)/g, (_, fn, args) => `${fn}(${args})`);
+
+        // LIST
+        expr = expr.replace(/LIST (.+)/g, (_, items) => `[${items}]`);
+        expr = expr.replace(/\bLIST\b/g, "[]");
+
+        // LENGTH
+        expr = expr.replace(/LENGTH (\w+)/g, (_, name) => `${name}.length`);
+
+        // ACCESS: LST AT X
+        expr = expr.replace(/(\w+) AT (.+)/g, (_, arr, idx) => `${arr}[${idx}]`);
+
+        return expr;
+    }
+
+    transformPrint(expr) {
+        // Split on strings and variables
+        let parts = [];
+        let buffer = "";
+        let inString = false;
+
+        for (let i = 0; i < expr.length; i++) {
+            const c = expr[i];
+            if (c === '"') {
+                inString = !inString;
+                buffer += c;
+                continue;
+            }
+            if (!inString && c === " ") {
+                if (buffer) { parts.push(buffer); buffer = ""; }
+                continue;
+            }
+            buffer += c;
+        }
+        if (buffer) parts.push(buffer);
+
+        // Join strings and variables with +
+        return parts.map(p => {
+            if (p.startsWith('"') && p.endsWith('"')) return p;
+            else return p;
+        }).join(" + ");
+    }
+}
+
+let woplcompjs = new WOPLCOMPJS();
+const ccode = `
+LET A = 10
+LET B = 20
+
+FUNCTION Add PARAM A,B START
+    RETURN A + B
+END
+
+LET X = CALL Add WITH 5,A
+PRINT "Result: " X
+
+IF X > 10 THEN
+    PRINT "Big"
+ELSE
+    PRINT "Small"
+END
+
+ITER 1 TO 10 WITH I
+    !PRINT "Loop: " I
+    ITER 1 TO 10 WITH J
+        PRINT "Loop: J: " J " I: " I
+    END
+END
+
+LET I = 0
+WHILE I < 5 START
+    PRINT "While: " I
+    LET I = I + 1
+END
+
+LET LST = LIST 1, 2, 3, 4, 5
+SET LST AT 2 TO 99
+LET LSTLEN = LENGTH LST
+PRINT "Length: " LSTLEN
+LET Y = LST AT 2
+PRINT "Element at 2: " Y
+LET Y = 5
+PRINT Y
+PRINT LST
+
+`;
+
+// run it
+const js = woplcompjs.compile(ccode);
+console.log(js);
+
+// run it
+new Function(js)();
+
+
+/*
+// reimplementation of wpl with byte code compilation support:
+// Bytecode Instruction Set
+const OpCode = {
+    // Stack operations
+    PUSH: 0,          // Push literal value onto stack
+    POP: 1,           // Pop value from stack
+    LOAD: 2,          // Load variable onto stack
+    STORE: 3,         // Store top of stack to variable
+    
+    // Arithmetic
+    ADD: 10,
+    SUB: 11,
+    MUL: 12,
+    DIV: 13,
+    MOD: 14,
+    
+    // Comparison
+    EQ: 20,
+    NE: 21,
+    LT: 22,
+    LE: 23,
+    GT: 24,
+    GE: 25,
+    
+    // Logical
+    AND: 30,
+    OR: 31,
+    NOT: 32,
+    
+    // Control flow
+    JUMP: 40,         // Unconditional jump
+    JUMP_IF_FALSE: 41,// Jump if top of stack is false
+    JUMP_IF_TRUE: 42, // Jump if top of stack is true
+    
+    // Function calls
+    CALL: 50,         // Call function
+    RETURN: 51,       // Return from function
+    
+    // I/O
+    PRINT: 60,
+    INPUT: 61,
+    
+    // Lists
+    LIST_NEW: 70,     // Create new list
+    LIST_GET: 71,     // Get element at index
+    LIST_SET: 72,     // Set element at index
+    LIST_APPEND: 73,  // Append to list
+    LIST_REMOVE: 74,  // Remove from list
+    LIST_LEN: 75,     // Get list length
+    LIST_FIND: 76,    // Find in list
+    LIST_CONTAINS: 77,// Check if in list
+    LIST_CLEAR: 78,   // Clear list
+    
+    // Graphics
+    G_INIT: 80,
+    G_CLOSE: 81,
+    G_CLEAR: 82,
+    G_PIXEL: 83,
+    G_LINE: 84,
+    G_RECT: 85,
+    G_FRECT: 86,
+    G_CIRCLE: 87,
+    G_FCIRCLE: 88,
+    G_TEXT: 89,
+    G_USED: 90,
+    
+    // Special
+    SLEEP: 100,
+    EXEC: 101,
+    ISDOWN: 102,
+    
+    // Loop control
+    BREAK: 110,
+    CONTINUE: 111,
+    
+    // End marker
+    HALT: 255
+};
+
+// Bytecode Compiler
+class BytecodeCompiler {
+    constructor() {
+        this.bytecode = [];
+        this.constants = [];
+        this.labels = new Map();
+        this.functions = new Map();
+        this.currentAddress = 0;
+    }
+
+    // Add constant to pool and return index
+    addConstant(value) {
+        const index = this.constants.indexOf(value);
+        if (index !== -1) return index;
+        this.constants.push(value);
+        return this.constants.length - 1;
+    }
+
+    // Emit instruction
+    emit(opcode, ...operands) {
+        this.bytecode.push(opcode);
+        for (const operand of operands) {
+            this.bytecode.push(operand);
+        }
+        this.currentAddress = this.bytecode.length;
+    }
+
+    // Label management
+    setLabel(name) {
+        this.labels.set(name, this.currentAddress);
+    }
+
+    getLabel(name) {
+        return this.labels.get(name);
+    }
+
+    // Create placeholder for forward jumps
+    createPlaceholder() {
+        const pos = this.currentAddress;
+        this.emit(0); // Placeholder
+        return pos;
+    }
+
+    patchPlaceholder(pos, value) {
+        this.bytecode[pos] = value;
+    }
+
+    compile(code) {
+        const lines = code.split("\n")
+            .map(l => l.trim())
+            .filter(l => l.length > 0 && !l.startsWith("//") && !l.startsWith("#"));
+
+        try {
+            this.compileBlock(lines, 0, lines.length);
+            this.emit(OpCode.HALT);
+            
+            return {
+                success: true,
+                bytecode: this.bytecode,
+                constants: this.constants,
+                functions: Object.fromEntries(this.functions)
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: error.message,
+                line: error.line || 0
+            };
+        }
+    }
+
+    compileBlock(lines, start, end) {
+        let i = start;
+        
+        while (i < end) {
+            const line = lines[i];
+            
+            try {
+                if (line.startsWith("LET ")) {
+                    i = this.compileLet(lines, i);
+                } else if (line.startsWith("PRINT ")) {
+                    i = this.compilePrint(lines, i);
+                } else if (line.startsWith("INPUT ")) {
+                    i = this.compileInput(lines, i);
+                } else if (line.startsWith("IF ")) {
+                    i = this.compileIf(lines, i, end);
+                } else if (line.startsWith("WHILE ")) {
+                    i = this.compileWhile(lines, i, end);
+                } else if (line.startsWith("ITER ")) {
+                    i = this.compileIter(lines, i, end);
+                } else if (line.startsWith("FUNCTION ")) {
+                    i = this.compileFunction(lines, i, end);
+                } else if (line.startsWith("CALL ")) {
+                    i = this.compileCall(lines, i);
+                } else if (line.startsWith("RETURN ")) {
+                    i = this.compileReturn(lines, i);
+                } else if (line.startsWith("BREAK")) {
+                    this.emit(OpCode.BREAK);
+                    i++;
+                } else if (line.startsWith("CONTINUE")) {
+                    this.emit(OpCode.CONTINUE);
+                    i++;
+                } else if (line.startsWith("APPEND ")) {
+                    i = this.compileAppend(lines, i);
+                } else if (line.startsWith("REMOVE ")) {
+                    i = this.compileRemove(lines, i);
+                } else if (line.startsWith("SET ") && line.includes(" AT ")) {
+                    i = this.compileSetAt(lines, i);
+                } else if (line.startsWith("CLEAR ")) {
+                    i = this.compileClear(lines, i);
+                } else if (line.startsWith("GINIT")) {
+                    i = this.compileGInit(lines, i);
+                } else if (line.startsWith("GCLOSE")) {
+                    this.emit(OpCode.G_CLOSE);
+                    i++;
+                } else if (line.startsWith("GCLEAR")) {
+                    i = this.compileGClear(lines, i);
+                } else if (line.startsWith("GPIXEL ")) {
+                    i = this.compileGPixel(lines, i);
+                } else if (line.startsWith("GLINE ")) {
+                    i = this.compileGLine(lines, i);
+                } else if (line.startsWith("GRECT ")) {
+                    i = this.compileGRect(lines, i);
+                } else if (line.startsWith("GFRECT ")) {
+                    i = this.compileGFRect(lines, i);
+                } else if (line.startsWith("GCIRCLE ")) {
+                    i = this.compileGCircle(lines, i);
+                } else if (line.startsWith("GFCIRCLE ")) {
+                    i = this.compileGFCircle(lines, i);
+                } else if (line.startsWith("GTEXT ")) {
+                    i = this.compileGText(lines, i);
+                } else if (line.startsWith("SLEEP ")) {
+                    i = this.compileSleep(lines, i);
+                } else if (line.startsWith("EXEC ")) {
+                    i = this.compileExec(lines, i);
+                } else {
+                    i++;
+                }
+            } catch (error) {
+                error.line = i + 1;
+                throw error;
+            }
+        }
+        
+        return i;
+    }
+
+    compileLet(lines, i) {
+        const line = lines[i];
+        const match = line.match(/LET\s+(\w+)\s*=\s*(.+)/);
+        
+        if (!match) {
+            throw new Error(`Invalid LET syntax: ${line}`);
+        }
+        
+        const varName = match[1];
+        const expr = match[2];
+        
+        // Compile expression
+        this.compileExpression(expr);
+        
+        // Store result
+        const varIndex = this.addConstant(varName);
+        this.emit(OpCode.STORE, varIndex);
+        
+        return i + 1;
+    }
+
+    compilePrint(lines, i) {
+        const line = lines[i];
+        const expr = line.substring(6);
+        
+        this.compileExpression(expr);
+        this.emit(OpCode.PRINT);
+        
+        return i + 1;
+    }
+
+    compileInput(lines, i) {
+        const line = lines[i];
+        const match = line.match(/INPUT\s+(.+)/);
+        
+        if (match && match[1]) {
+            this.compileExpression(match[1]);
+        } else {
+            const emptyStr = this.addConstant("");
+            this.emit(OpCode.PUSH, emptyStr);
+        }
+        
+        this.emit(OpCode.INPUT);
+        
+        return i + 1;
+    }
+
+    compileIf(lines, start, blockEnd) {
+        const line = lines[start];
+        const condPart = line.replace(/^IF\s+/, "").replace(/\s+THEN$/, "");
+        
+        // Compile condition
+        this.compileExpression(condPart);
+        
+        // Jump if false placeholder
+        const jumpIfFalsePos = this.currentAddress;
+        this.emit(OpCode.JUMP_IF_FALSE, 0);
+        
+        // Find blocks
+        let i = start + 1;
+        let depth = 0;
+        let elseStart = -1;
+        let blockEndPos = blockEnd;
+        
+        while (i < blockEnd) {
+            const l = lines[i];
+            
+            if (l.startsWith("IF ") || l.startsWith("WHILE ") || l.startsWith("ITER ")) {
+                depth++;
+            }
+            
+            if (l === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    blockEndPos = i;
+                    break;
+                }
+            }
+            
+            if (l === "ELSE" && depth === 0) {
+                elseStart = i;
+            }
+            
+            i++;
+        }
+        
+        // Compile THEN block
+        const thenEnd = elseStart !== -1 ? elseStart : blockEndPos;
+        this.compileBlock(lines, start + 1, thenEnd);
+        
+        if (elseStart !== -1) {
+            // Jump over ELSE block
+            const jumpOverElsePos = this.currentAddress;
+            this.emit(OpCode.JUMP, 0);
+            
+            // Patch JUMP_IF_FALSE to jump here
+            this.patchPlaceholder(jumpIfFalsePos + 1, this.currentAddress);
+            
+            // Compile ELSE block
+            this.compileBlock(lines, elseStart + 1, blockEndPos);
+            
+            // Patch jump over else
+            this.patchPlaceholder(jumpOverElsePos + 1, this.currentAddress);
+        } else {
+            // No ELSE, patch JUMP_IF_FALSE to jump to end
+            this.patchPlaceholder(jumpIfFalsePos + 1, this.currentAddress);
+        }
+        
+        return blockEndPos + 1;
+    }
+
+    compileWhile(lines, start, blockEnd) {
+        const line = lines[start];
+        const condPart = line.replace(/^WHILE\s+/, "").replace(/\s+START$/, "");
+        
+        // Mark loop start
+        const loopStart = this.currentAddress;
+        
+        // Compile condition
+        this.compileExpression(condPart);
+        
+        // Jump if false (exit loop)
+        const exitJumpPos = this.currentAddress;
+        this.emit(OpCode.JUMP_IF_FALSE, 0);
+        
+        // Find loop end
+        let i = start + 1;
+        let depth = 0;
+        let loopEnd = blockEnd;
+        
+        while (i < blockEnd) {
+            const l = lines[i];
+            
+            if (l.startsWith("WHILE ") || l.startsWith("IF ") || l.startsWith("ITER ")) {
+                depth++;
+            }
+            
+            if (l === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    loopEnd = i;
+                    break;
+                }
+            }
+            
+            i++;
+        }
+        
+        // Compile loop body
+        this.compileBlock(lines, start + 1, loopEnd);
+        
+        // Jump back to condition
+        this.emit(OpCode.JUMP, loopStart);
+        
+        // Patch exit jump
+        this.patchPlaceholder(exitJumpPos + 1, this.currentAddress);
+        
+        return loopEnd + 1;
+    }
+
+    compileIter(lines, start, blockEnd) {
+        const line = lines[start];
+        const match = line.match(/^ITER\s+(.+?)\s+TO\s+(.+?)(?:\s+STEP\s+(.+?))?\s+WITH\s+(\w+)$/);
+        
+        if (!match) {
+            throw new Error(`Invalid ITER syntax: ${line}`);
+        }
+        
+        const iterStart = match[1];
+        const iterEnd = match[2];
+        const step = match[3] || "1";
+        const iterator = match[4];
+        
+        // Initialize iterator
+        this.compileExpression(iterStart);
+        const iterVarIndex = this.addConstant(iterator);
+        this.emit(OpCode.STORE, iterVarIndex);
+        
+        // Store end value and step in temp variables
+        const endVarIndex = this.addConstant("__iter_end__");
+        const stepVarIndex = this.addConstant("__iter_step__");
+        
+        this.compileExpression(iterEnd);
+        this.emit(OpCode.STORE, endVarIndex);
+        
+        this.compileExpression(step);
+        this.emit(OpCode.STORE, stepVarIndex);
+        
+        // Loop start
+        const loopStart = this.currentAddress;
+        
+        // Check condition: iterator <= end (or >= if step negative)
+        this.emit(OpCode.LOAD, iterVarIndex);
+        this.emit(OpCode.LOAD, endVarIndex);
+        this.emit(OpCode.LOAD, stepVarIndex);
+        const stepConst = this.addConstant(0);
+        this.emit(OpCode.PUSH, stepConst);
+        this.emit(OpCode.GT); // step > 0?
+        
+        // If step > 0, use LE, else use GE
+        const useLeJumpPos = this.currentAddress;
+        this.emit(OpCode.JUMP_IF_FALSE, 0);
+        
+        // step > 0 branch
+        this.emit(OpCode.LOAD, iterVarIndex);
+        this.emit(OpCode.LOAD, endVarIndex);
+        this.emit(OpCode.LE);
+        const afterCondJumpPos = this.currentAddress;
+        this.emit(OpCode.JUMP, 0);
+        
+        // step <= 0 branch
+        this.patchPlaceholder(useLeJumpPos + 1, this.currentAddress);
+        this.emit(OpCode.LOAD, iterVarIndex);
+        this.emit(OpCode.LOAD, endVarIndex);
+        this.emit(OpCode.GE);
+        
+        this.patchPlaceholder(afterCondJumpPos + 1, this.currentAddress);
+        
+        // Exit if condition false
+        const exitJumpPos = this.currentAddress;
+        this.emit(OpCode.JUMP_IF_FALSE, 0);
+        
+        // Find loop end
+        let i = start + 1;
+        let depth = 0;
+        let loopEnd = blockEnd;
+        
+        while (i < blockEnd) {
+            const l = lines[i];
+            
+            if (l.startsWith("ITER ") || l.startsWith("WHILE ") || l.startsWith("IF ")) {
+                depth++;
+            }
+            
+            if (l === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    loopEnd = i;
+                    break;
+                }
+            }
+            
+            i++;
+        }
+        
+        // Compile loop body
+        this.compileBlock(lines, start + 1, loopEnd);
+        
+        // Increment iterator by step
+        this.emit(OpCode.LOAD, iterVarIndex);
+        this.emit(OpCode.LOAD, stepVarIndex);
+        this.emit(OpCode.ADD);
+        this.emit(OpCode.STORE, iterVarIndex);
+        
+        // Jump back
+        this.emit(OpCode.JUMP, loopStart);
+        
+        // Patch exit
+        this.patchPlaceholder(exitJumpPos + 1, this.currentAddress);
+        
+        return loopEnd + 1;
+    }
+
+    compileFunction(lines, start, blockEnd) {
+        const header = lines[start];
+        const match = header.match(/FUNCTION\s+(\w+)(?:\s+PARAM\s+(.+))?\s+START/);
+        
+        if (!match) {
+            throw new Error(`Invalid FUNCTION syntax: ${header}`);
+        }
+        
+        const name = match[1];
+        const params = match[2] ? match[2].split(",").map(s => s.trim()) : [];
+        
+        // Find function end
+        let i = start + 1;
+        let depth = 0;
+        let funcEnd = blockEnd;
+        
+        while (i < blockEnd) {
+            const l = lines[i];
+            
+            if (l.startsWith("FUNCTION ") || l.startsWith("IF ") || l.startsWith("WHILE ") || l.startsWith("ITER ")) {
+                depth++;
+            }
+            
+            if (l === "END") {
+                if (depth > 0) {
+                    depth--;
+                } else {
+                    funcEnd = i;
+                    break;
+                }
+            }
+            
+            i++;
+        }
+        
+        // Store function metadata
+        this.functions.set(name, {
+            address: this.currentAddress,
+            params: params,
+            bodyStart: start + 1,
+            bodyEnd: funcEnd
+        });
+        
+        // Jump over function body (functions are only called, not executed in sequence)
+        const skipFuncPos = this.currentAddress;
+        this.emit(OpCode.JUMP, 0);
+        
+        // Mark function start
+        this.setLabel(`func_${name}`);
+        
+        // Compile function body
+        this.compileBlock(lines, start + 1, funcEnd);
+        
+        // Implicit return null
+        const nullConst = this.addConstant(null);
+        this.emit(OpCode.PUSH, nullConst);
+        this.emit(OpCode.RETURN);
+        
+        // Patch skip jump
+        this.patchPlaceholder(skipFuncPos + 1, this.currentAddress);
+        
+        return funcEnd + 1;
+    }
+
+    compileCall(lines, i) {
+        const line = lines[i];
+        const match = line.match(/CALL\s+(\w+)(?:\s+WITH\s+(.+))?/);
+        
+        if (!match) {
+            throw new Error(`Invalid CALL syntax: ${line}`);
+        }
+        
+        const funcName = match[1];
+        const args = match[2] ? match[2].split(",").map(a => a.trim()) : [];
+        
+        // Push arguments onto stack (in order)
+        for (const arg of args) {
+            this.compileExpression(arg);
+        }
+        
+        // Push argument count
+        const argCount = this.addConstant(args.length);
+        this.emit(OpCode.PUSH, argCount);
+        
+        // Call function
+        const funcNameIndex = this.addConstant(funcName);
+        this.emit(OpCode.CALL, funcNameIndex);
+        
+        return i + 1;
+    }
+
+    compileReturn(lines, i) {
+        const line = lines[i];
+        const expr = line.substring(7);
+        
+        this.compileExpression(expr);
+        this.emit(OpCode.RETURN);
+        
+        return i + 1;
+    }
+
+    compileAppend(lines, i) {
+        const line = lines[i];
+        const match = line.match(/APPEND\s+(.+)\s+TO\s+(\w+)/);
+        
+        if (!match) {
+            throw new Error(`Invalid APPEND syntax: ${line}`);
+        }
+        
+        const values = match[1].split(",").map(v => v.trim());
+        const listName = match[2];
+        
+        const listIndex = this.addConstant(listName);
+        
+        for (const value of values) {
+            this.emit(OpCode.LOAD, listIndex);
+            this.compileExpression(value);
+            this.emit(OpCode.LIST_APPEND);
+        }
+        
+        return i + 1;
+    }
+
+    compileRemove(lines, i) {
+        const line = lines[i];
+        const listNameMatch = line.match(/FROM\s+(\w+)/);
+        
+        if (!listNameMatch) {
+            throw new Error(`Invalid REMOVE syntax: ${line}`);
+        }
+        
+        const listIndex = this.addConstant(listNameMatch[1]);
+        this.emit(OpCode.LOAD, listIndex);
+        
+        if (line.includes(" INDEX ")) {
+            const match = line.match(/REMOVE\s+INDEX\s+(.+)\s+FROM/);
+            this.compileExpression(match[1]);
+            this.emit(OpCode.LIST_REMOVE);
+        } else if (line.includes(" ALL ")) {
+            const match = line.match(/REMOVE\s+ALL\s+(.+)\s+FROM/);
+            this.compileExpression(match[1]);
+            const trueConst = this.addConstant(true);
+            this.emit(OpCode.PUSH, trueConst);
+            this.emit(OpCode.LIST_REMOVE);
+        } else {
+            const match = line.match(/REMOVE\s+(.+)\s+FROM/);
+            this.compileExpression(match[1]);
+            const falseConst = this.addConstant(false);
+            this.emit(OpCode.PUSH, falseConst);
+            this.emit(OpCode.LIST_REMOVE);
+        }
+        
+        return i + 1;
+    }
+
+    compileSetAt(lines, i) {
+        const line = lines[i];
+        const match = line.match(/SET\s+(\w+)\s+AT\s+(.+)\s+TO\s+(.+)/);
+        
+        if (!match) {
+            throw new Error(`Invalid SET AT syntax: ${line}`);
+        }
+        
+        const listIndex = this.addConstant(match[1]);
+        this.emit(OpCode.LOAD, listIndex);
+        this.compileExpression(match[2]);
+        this.compileExpression(match[3]);
+        this.emit(OpCode.LIST_SET);
+        
+        return i + 1;
+    }
+
+    compileClear(lines, i) {
+        const line = lines[i];
+        const match = line.match(/CLEAR\s+(\w+)/);
+        
+        if (!match) {
+            throw new Error(`Invalid CLEAR syntax: ${line}`);
+        }
+        
+        const listIndex = this.addConstant(match[1]);
+        this.emit(OpCode.LOAD, listIndex);
+        this.emit(OpCode.LIST_CLEAR);
+        
+        return i + 1;
+    }
+
+    compileGInit(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GINIT(?:\s+(.+))?/);
+        
+        if (match && match[1]) {
+            const args = this.parseCommaArgs(match[1]);
+            if (args.length === 2) {
+                this.compileExpression(args[0]);
+                this.compileExpression(args[1]);
+            } else {
+                const w = this.addConstant(800);
+                const h = this.addConstant(600);
+                this.emit(OpCode.PUSH, w);
+                this.emit(OpCode.PUSH, h);
+            }
+        } else {
+            const w = this.addConstant(800);
+            const h = this.addConstant(600);
+            this.emit(OpCode.PUSH, w);
+            this.emit(OpCode.PUSH, h);
+        }
+        
+        this.emit(OpCode.G_INIT);
+        return i + 1;
+    }
+
+    compileGClear(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GCLEAR(?:\s+(.+))?/);
+        
+        if (match && match[1]) {
+            this.compileExpression(match[1]);
+        } else {
+            const black = this.addConstant('#000000');
+            this.emit(OpCode.PUSH, black);
+        }
+        
+        this.emit(OpCode.G_CLEAR);
+        return i + 1;
+    }
+
+    compileGPixel(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GPIXEL\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        this.compileExpression(args[0]);
+        this.compileExpression(args[1]);
+        
+        if (args[2]) {
+            this.compileExpression(args[2]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        this.emit(OpCode.G_PIXEL);
+        return i + 1;
+    }
+
+    compileGLine(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GLINE\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        for (let j = 0; j < 4; j++) {
+            this.compileExpression(args[j]);
+        }
+        
+        if (args[4]) {
+            this.compileExpression(args[4]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        if (args[5]) {
+            this.compileExpression(args[5]);
+        } else {
+            const one = this.addConstant(1);
+            this.emit(OpCode.PUSH, one);
+        }
+        
+        this.emit(OpCode.G_LINE);
+        return i + 1;
+    }
+
+    compileGRect(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GRECT\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        for (let j = 0; j < 4; j++) {
+            this.compileExpression(args[j]);
+        }
+        
+        if (args[4]) {
+            this.compileExpression(args[4]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        if (args[5]) {
+            this.compileExpression(args[5]);
+        } else {
+            const one = this.addConstant(1);
+            this.emit(OpCode.PUSH, one);
+        }
+        
+        this.emit(OpCode.G_RECT);
+        return i + 1;
+    }
+
+    compileGFRect(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GFRECT\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        for (let j = 0; j < 4; j++) {
+            this.compileExpression(args[j]);
+        }
+        
+        if (args[4]) {
+            this.compileExpression(args[4]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        this.emit(OpCode.G_FRECT);
+        return i + 1;
+    }
+
+    compileGCircle(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GCIRCLE\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        for (let j = 0; j < 3; j++) {
+            this.compileExpression(args[j]);
+        }
+        
+        if (args[3]) {
+            this.compileExpression(args[3]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        if (args[4]) {
+            this.compileExpression(args[4]);
+        } else {
+            const one = this.addConstant(1);
+            this.emit(OpCode.PUSH, one);
+        }
+        
+        this.emit(OpCode.G_CIRCLE);
+        return i + 1;
+    }
+
+    compileGFCircle(lines, i) {
+        const line = lines[i];
+        const match = line.match(/GFCIRCLE\s+(.+)/);
+        const args = this.parseCommaArgs(match[1]);
+        
+        for (let j = 0; j < 3; j++) {
+            this.compileExpression(args[j]);
+        }
+        
+        if (args[3]) {
+            this.compileExpression(args[3]);
+        } else {
+            const green = this.addConstant('#00ff00');
+            this.emit(OpCode.PUSH, green);
+        }
+        
+        this.emit(OpCode.G_FCIRCLE);
+        return i + 1;
+    }
+
+    //compileGText(lines, i) {
+    //    const line = lines[i];
+    //    const match = line.match(/GTEXT\s+(.+)/);
+    //    const args = this.parseCommaArgs(match[1]);
+    //    
+    //    for (
+
+
+    // minimal version - may not work!
+
+    addConst(val) {
+        let i = this.constants.indexOf(val);
+        if (i !== -1) return i;
+        this.constants.push(val);
+        return this.constants.length - 1;
+    }
+
+    compileExpression(expr) {
+        expr = expr.trim();
+        
+        // String literal
+        if ((expr[0] === '"' && expr[expr.length-1] === '"') ||
+            (expr[0] === "'" && expr[expr.length-1] === "'")) {
+            this.emit(OpCode.PUSH, this.addConst(expr.slice(1, -1)));
+            return;
+        }
+        
+        // Number
+        if (!isNaN(expr)) {
+            this.emit(OpCode.PUSH, this.addConst(expr.includes('.') ? parseFloat(expr) : parseInt(expr)));
+            return;
+        }
+        
+        // Boolean
+        if (expr === 'true') { this.emit(OpCode.PUSH, this.addConst(true)); return; }
+        if (expr === 'false') { this.emit(OpCode.PUSH, this.addConst(false)); return; }
+        
+        // Variable
+        if (/^[A-Za-z_]\w*$/.test(expr)) {
+            this.emit(OpCode.LOAD, this.addConst(expr));
+            return;
+        }
+        
+        // Binary operations
+        for (let [op, code] of [['+', OpCode.ADD], ['-', OpCode.SUB], ['*', OpCode.MUL], ['/', OpCode.DIV],
+                                 ['==', OpCode.EQ], ['!=', OpCode.NE], ['<', OpCode.LT], ['>', OpCode.GT]]) {
+            let parts = this.splitOp(expr, op);
+            if (parts.length === 2) {
+                this.compileExpr(parts[0]);
+                this.compileExpr(parts[1]);
+                this.emit(code);
+                return;
+            }
+        }
+        
+        // Fallback: push as constant
+        this.emit(OpCode.PUSH, this.addConst(expr));
+    }
+
+}
+*/
 
 
 // store modules here
@@ -3094,7 +4766,7 @@ class OsCalls{
     createFile(path, content){
         console.log("Creating file");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3110,7 +4782,7 @@ class OsCalls{
     deleteFile(path, force){
         console.log("Deleting file");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3126,7 +4798,7 @@ class OsCalls{
     createDir(path){
         console.log("Creating directory");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3142,7 +4814,7 @@ class OsCalls{
     deleteDir(path, force){
         console.log("Deleting directory");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3158,7 +4830,7 @@ class OsCalls{
     readFile(path){
         console.log("Reading file");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3175,7 +4847,7 @@ class OsCalls{
     writeFile(path, content){
         console.log("Writing file");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3194,7 +4866,7 @@ class OsCalls{
     }
     movePath(srcPath, destPath) {
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3212,7 +4884,7 @@ class OsCalls{
     }
     copyPath(srcPath, destPath) {
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
@@ -3233,23 +4905,42 @@ class OsCalls{
     autoLoadMod(modname){
         console.log("Autoload module");
 
-        if(!this.probeFSModule){
+        if(!this.probeFSModule()){
             this.panic10();
             return ["", false, this.panicMessage10FS]
         }
         
-        if(!Loader.getAllModules.includes(modname)){
+        if(!Loader.getAllModules().includes(modname)){
             return ["", false, "Module doesn't exist"];
         }
         
+        let parsedPath = filesystem.parsePath("/modules/"+modname+"/autoload");
+        let output = filesystem.createFile(parsedPath, "");
+        // fails if file already exists so just ignore error
 
+        //if(output[1] == false){
+        //    return ["", false, "Autoload failed!: "+output[2]];
+        //} else {
+            return ["Autoload successfully enabled for module: "+modname, true, ""];
+        //}
+    }
 
+    unAutoLoadMod(modname){
+        console.log("Autoload module");
 
-        if(output[1] == false){
-            return ["", false, output[2]];
-        } else {
-            return [output[0], true, ""];
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
         }
+        
+        if(!Loader.getAllModules().includes(modname)){
+            return ["", false, "Module doesn't exist"];
+        }
+        
+        let parsedPath = filesystem.parsePath("/modules/"+modname+"/autoload");
+        let output = filesystem.deleteFile(parsedPath, true);
+
+        return ["Autoload disabled for module: "+modname, true, ""];
     }
 
 }
@@ -3779,6 +5470,33 @@ class Commands{
         }
     }
 
+    autoload(args){
+        // mdoule loader
+        if (!args[0]) {
+            return ["Usage: autoload <module>", "yellow", ""];
+        }
+
+        let output = OS.autoLoadMod(args[0]);
+        console.log(output);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return [output[0], "green", ""];
+        }
+    }
+    unautoload(args){
+        // mdoule loader
+        if (!args[0]) {
+            return ["Usage: unautoload <module>", "yellow", ""];
+        }
+
+        let output = OS.unAutoLoadMod(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        } else {
+            return [output[0], "green", ""];
+        }
+    }
     // ...
 }
 
@@ -3825,7 +5543,9 @@ class CommandManager {
             history: commands.history,
             ping: commands.ping,
             fetch: commands.fetch,
-            wpl: commands.wpl
+            wpl: commands.wpl,
+            autoload: commands.autoload,
+            unautoload: commands.unautoload
         };
         this.asyncCommands = ["ping"]
     }
@@ -4135,12 +5855,12 @@ let syntaxHighLighting = {
       green: [
         "GINIT", "GCLOSE", "GCLEAR", "GPIXEL", "GLINE", "GRECT", 
         "GFRECT", "GCIRCLE", "GFCIRCLE", "GTEXT","GUSED",
-        "LET","PRINT","INPUT", "FUNCTION","PARAM","RETURN","START",
+        "SLEEP ", "ISDOWN ", "INDEX ",
+        "LET","PRINT","INPUT", "FUNCTION ","PARAM","RETURN","START",
         "APPEND ","REMOVE ", "END","CALL","WITH","IF","ELSE","THEN",
         "EXEC","ITER"," TO ", "WHILE ", " STEP ", "BREAK", "CONTINUE",
         " INDEX ", " FROM ", " AT ", "SET ", "FIND ", " IN ", "LENGTH ",
         "LIST", "CLEAR ", " ALL "
-
       ],
     }
 };

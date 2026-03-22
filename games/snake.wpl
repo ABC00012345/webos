@@ -1,0 +1,123 @@
+#wpl
+
+# init
+EXEC load gfx
+IF GUSED THEN
+        GCLOSE
+END
+GINIT
+EXEC load random
+
+# --- Setup ---
+LET cellSize = 20
+LET cols = 40
+LET rows = 30
+
+# Snake body as lists of X and Y positions
+LET snakeX = LIST 200,190,180,170,160
+LET snakeY = LIST 200,200,200,200,200
+LET snakeLength = LENGTH snakeX
+
+LET dirX = 1
+LET dirY = 0
+
+# Place apple randomly
+LET tempX = EXEC randint 0 39
+LET tempY = EXEC randint 0 29
+LET appleX = tempX * cellSize
+LET appleY = tempY * cellSize
+
+LET speed = 50
+
+LET POINTS = 0
+
+LET gameover = false
+
+# --- Game loop ---
+WHILE gameover == false START
+    GCLEAR
+
+    # --- Handle input ---
+    IF ISDOWN "ArrowUp" || ISDOWN "w" THEN
+        IF dirY == 0 THEN
+            LET dirX = 0
+            LET dirY = -1
+        END
+    END
+    IF ISDOWN "ArrowDown" || ISDOWN "s" THEN
+        IF dirY == 0 THEN
+            LET dirX = 0
+            LET dirY = 1
+        END
+    END
+    IF ISDOWN "ArrowLeft" || ISDOWN "a" THEN
+        IF dirX == 0 THEN
+            LET dirX = -1
+            LET dirY = 0
+        END
+    END
+    IF ISDOWN "ArrowRight" || ISDOWN "d" THEN
+        IF dirX == 0 THEN
+            LET dirX = 1
+            LET dirY = 0
+        END
+    END
+
+    # --- Compute new head ---
+    LET newHeadX = snakeX AT 0 + dirX * cellSize
+    LET newHeadY = snakeY AT 0 + dirY * cellSize
+
+    # --- Check collisions (walls) ---
+    IF newHeadX < 0 || newHeadX >= cols*cellSize || newHeadY < 0 || newHeadY >= rows*cellSize THEN
+        PRINT "Game Over! Hit wall."
+        LET gameover = true
+    END
+
+    # --- Check collisions (self) ---
+    ITER 0 TO snakeLength-1 WITH I
+        IF snakeX AT I == newHeadX && snakeY AT I == newHeadY THEN
+            PRINT "Game Over! Hit yourself."
+            LET gameover = true
+        END
+    END
+
+    # --- Move snake body ---
+    APPEND 0 TO snakeX
+    APPEND 0 TO snakeY
+    LET snakeLength = LENGTH snakeX
+
+    ITER snakeLength-1 TO 1 STEP -1 WITH I
+        SET snakeX AT I TO snakeX AT I-1
+        SET snakeY AT I TO snakeY AT I-1
+    END
+    SET snakeX AT 0 TO newHeadX
+    SET snakeY AT 0 TO newHeadY
+
+    # --- Eat apple ---
+    IF newHeadX == appleX && newHeadY == appleY THEN
+        # Grow snake by keeping the extra tail
+        LET tempX = EXEC randint 0 39
+        LET tempY = EXEC randint 0 29
+        LET appleX = tempX * cellSize
+        LET appleY = tempY * cellSize
+        LET POINTS = POINTS+1
+    ELSE
+        # Remove last segment to keep length
+        REMOVE INDEX snakeLength-1 FROM snakeX
+        REMOVE INDEX snakeLength-1 FROM snakeY
+        LET snakeLength = LENGTH snakeX
+    END
+
+    # --- Draw apple ---
+    GFRECT appleX, appleY, cellSize, cellSize, "red"
+
+    # --- Draw snake ---
+    ITER 0 TO snakeLength-1 WITH I
+        GFRECT snakeX AT I, snakeY AT I, cellSize, cellSize, "green"
+    END
+
+    GTEXT 10, 30, "SNAKE"
+    GTEXT 10,50,"Points: " +POINTS,24
+
+    SLEEP speed
+END
