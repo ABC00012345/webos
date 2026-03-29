@@ -36,7 +36,15 @@ tasks:
 - add command line args
 add inc, dec command for simple integer manipulation instead of LET X = X+1
 - comments added
+NEW OS tasks:
+integrate with host os, run server that allows executing cmds on real system and send response to webos back
+audio player
+text editor with mobile support
+some gui features
+export files from os, maybe create a command for it (export)
+call func without assigning to variable (wpl)
 
+some tasks outdated / alr done check pls
 - for now the language has many features and support but many things need to be put first in variables to be used, e.g. list len, exec, ..., print, ..., this has to do with the handleExpr, maybe move all important methods there, here are some of them:
 - because then other functions will work + support for LET will still be kept cuz it also uses expr
 - EXEC (maybe both, handle normally and with expr, cuz can also be without output)
@@ -52,6 +60,8 @@ LET RES = ADD 1,2,3,A,B, ...
 : expr checker still not good :(
 - ctrl-Z not working in editor
 - allow functions to modify outer variables
+- function calls cur: CALL func WITH p1,p2 -> func(p1,p2)  much better
+-   -> and make some other syntax easier too :)
 
 - def add at some point:
 string functions: SPLIT, JOIN, SUBSTR, toUpper

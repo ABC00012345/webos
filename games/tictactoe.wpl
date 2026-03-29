@@ -1,0 +1,311 @@
+#wpl
+
+# ================================
+#   TIC TAC TOE  — WPL Edition
+# ================================
+
+EXEC load gfx
+GINIT 600, 660
+
+# --- CONSTANTS ---
+LET WIDTH = 600
+LET HEIGHT = 660
+
+LET CELL = 160
+LET MARGIN = 60
+
+# Board: 9 cells, 0 = empty, 1 = X, 2 = O
+LET board = LIST 0,0,0,0,0,0,0,0,0
+
+# 1 = X's turn, 2 = O's turn
+LET currentPlayer = 1
+
+LET gameOver = false
+LET winner = 0
+LET isDraw = false
+
+LET mouseWasDown = false
+
+# Win streak cell indices (for drawing the line)
+LET winA = -1
+LET winB = -1
+LET winC = -1
+
+# --- FUNCTIONS ---
+
+# Get board index from pixel coords
+FUNCTION GetCell PARAM pos START
+    LET mx = pos AT 0
+    LET my = pos AT 1
+
+    # Adjust for margin
+    LET bx = mx - MARGIN
+    LET by = my - MARGIN
+
+    IF bx < 0 || by < 0 THEN
+        RETURN -1
+    END
+
+    LET col = FPTOI(bx / CELL)
+    LET row = FPTOI(by / CELL)
+
+    IF col >= 3 || row >= 3 THEN
+        RETURN -1
+    END
+
+    LET idx = row * 3 + col
+    RETURN idx
+END
+
+# Check for a winner; sets winner and win cells; returns winner (0 if none)
+FUNCTION CheckWinner PARAM A START
+    # Rows
+    ITER 0 TO 2 WITH R
+        LET base = R * 3
+        LET a = board AT base
+        LET b = board AT base+1
+        LET c = board AT base+2
+        IF a != 0 && a == b && b == c THEN
+            LET winA = base
+            LET winB = base+1
+            LET winC = base+2
+            RETURN a
+        END
+    END
+
+    # Columns
+    ITER 0 TO 2 WITH C
+        LET a = board AT C
+        LET b = board AT C+3
+        LET c = board AT C+6
+        IF a != 0 && a == b && b == c THEN
+            LET winA = C
+            LET winB = C+3
+            LET winC = C+6
+            RETURN a
+        END
+    END
+
+    # Diagonal \
+    LET a = board AT 0
+    LET b = board AT 4
+    LET c = board AT 8
+    IF a != 0 && a == b && b == c THEN
+        LET winA = 0
+        LET winB = 4
+        LET winC = 8
+        RETURN a
+    END
+
+    # Diagonal /
+    LET a = board AT 2
+    LET b = board AT 4
+    LET c = board AT 6
+    IF a != 0 && a == b && b == c THEN
+        LET winA = 2
+        LET winB = 4
+        LET winC = 6
+        RETURN a
+    END
+
+    RETURN 0
+END
+
+# Check if board is full (draw)
+FUNCTION IsBoardFull PARAM A START
+    ITER 0 TO 8 WITH I
+        IF board AT I == 0 THEN
+            RETURN 0
+        END
+    END
+    RETURN 1
+END
+
+# Get pixel center X for cell index
+FUNCTION CellCX PARAM idx START
+    LET row = FPTOI(idx / 3)
+    LET col = idx - row * 3
+    RETURN MARGIN + col * CELL + FPTOI(CELL / 2)
+END
+
+# Get pixel center Y for cell index
+FUNCTION CellCY PARAM idx START
+    LET row = FPTOI(idx / 3)
+    RETURN MARGIN + row * CELL + FPTOI(CELL / 2)
+END
+
+# Reset the game
+FUNCTION ResetGame PARAM A START
+    LET board = LIST 0,0,0,0,0,0,0,0,0
+    LET currentPlayer = 1
+    LET gameOver = false
+    LET winner = 0
+    LET isDraw = false
+    LET winA = -1
+    LET winB = -1
+    LET winC = -1
+    RETURN 1
+END
+
+# Draw an X centered at (cx, cy) with arm half-length half
+FUNCTION DrawX PARAM cx START
+    LET cy = cx AT 1
+    LET ox = cx AT 0
+    LET half = 45
+    LET color = "cyan"
+
+    # Diagonal 1: top-left → bottom-right    \
+    ITER -2 TO 2 WITH off
+        GLINE ox-half,       cy-half+off,   ox+half,       cy+half+off,   color
+        GLINE ox-half+off,   cy-half,       ox+half+off,   cy+half,       color
+    END
+
+    # Diagonal 2: top-right → bottom-left     /
+    ITER -2 TO 2 WITH off
+        GLINE ox+half,       cy-half+off,   ox-half,       cy+half+off,   color
+        GLINE ox+half+off,   cy-half,       ox-half+off,   cy+half,       color
+    END
+
+    RETURN 1
+END
+
+# Draw an O centered at (cx, cy) using GCIRCLE
+FUNCTION DrawO PARAM cx START
+    LET cy = cx AT 1
+    LET ox = cx AT 0
+    LET color = "orange"
+
+    # Draw concentric circles for thickness
+    GCIRCLE ox, cy, 45, color, 1
+    GCIRCLE ox, cy, 44, color, 1
+    GCIRCLE ox, cy, 43, color, 1
+    GCIRCLE ox, cy, 42, color, 1
+    GCIRCLE ox, cy, 41, color, 1
+    GCIRCLE ox, cy, 40, color, 1
+    RETURN 1
+END
+
+# --- MAIN LOOP ---
+WHILE 1 == 1 START
+    GCLEAR
+
+    # ==== DRAW BACKGROUND ====
+    GFRECT 0, 0, WIDTH, HEIGHT, "#1a1a2e"
+
+    # ==== DRAW GRID ====
+    LET gridColor = "#4a4a8a"
+
+    # Vertical lines
+    GLINE MARGIN+CELL,   MARGIN, MARGIN+CELL,   MARGIN+CELL*3, gridColor
+    GLINE MARGIN+CELL*2, MARGIN, MARGIN+CELL*2, MARGIN+CELL*3, gridColor
+
+    # Horizontal lines
+    GLINE MARGIN, MARGIN+CELL,   MARGIN+CELL*3, MARGIN+CELL,   gridColor
+    GLINE MARGIN, MARGIN+CELL*2, MARGIN+CELL*3, MARGIN+CELL*2, gridColor
+
+    # Thick grid (draw twice offset for width)
+    GLINE MARGIN+CELL+1,   MARGIN, MARGIN+CELL+1,   MARGIN+CELL*3, gridColor
+    GLINE MARGIN+CELL*2+1, MARGIN, MARGIN+CELL*2+1, MARGIN+CELL*3, gridColor
+    GLINE MARGIN, MARGIN+CELL+1,   MARGIN+CELL*3, MARGIN+CELL+1,   gridColor
+    GLINE MARGIN, MARGIN+CELL*2+1, MARGIN+CELL*3, MARGIN+CELL*2+1, gridColor
+
+    # ==== DRAW BOARD PIECES ====
+    ITER 0 TO 8 WITH I
+        LET piece = board AT I
+        LET posArr = LIST 0, 0
+        LET cx = CALL CellCX WITH I
+        LET cy = CALL CellCY WITH I
+        SET posArr AT 0 TO cx
+        SET posArr AT 1 TO cy
+
+        IF piece == 1 THEN
+            LET TMP = CALL DrawX WITH posArr
+        END
+        IF piece == 2 THEN
+            LET TMP = CALL DrawO WITH posArr
+        END
+    END
+
+    # ==== DRAW WIN LINE ====
+    IF winA != -1 THEN
+        LET ax = CALL CellCX WITH winA
+        LET ay = CALL CellCY WITH winA
+        LET bx = CALL CellCX WITH winC
+        LET by = CALL CellCY WITH winC
+        GLINE ax, ay, bx, by, "white"
+        GLINE ax+1, ay+1, bx+1, by+1, "white"
+        GLINE ax-1, ay-1, bx-1, by-1, "white"
+    END
+
+    # ==== DRAW UI TEXT ====
+    GTEXT 205, 40, "TIC TAC TOE", "white", 28
+
+    IF gameOver == false THEN
+        IF currentPlayer == 1 THEN
+            GTEXT 200, 580, "Player X's Turn", "cyan", 22
+        ELSE
+            GTEXT 200, 580, "Player O's Turn", "orange", 22
+        END
+    END
+
+    IF winner == 1 THEN
+        GTEXT 195, 580, "Player X Wins!", "cyan", 26
+        GTEXT 190, 620, "Tap anywhere to restart", "gray", 16
+    END
+    IF winner == 2 THEN
+        GTEXT 195, 580, "Player O Wins!", "orange", 26
+        GTEXT 190, 620, "Tap anywhere to restart", "gray", 16
+    END
+    IF isDraw == true THEN
+        GTEXT 205, 580, "It's a Draw!", "yellow", 26
+        GTEXT 190, 620, "Tap anywhere to restart", "gray", 16
+    END
+
+    # ==== HANDLE MOUSE / TOUCH INPUT ====
+    LET POS = MOUSEPOS
+    LET X = POS AT 0
+    LET Y = POS AT 1
+    GFRECT X, Y, 4, 4, "yellow"
+     
+    LET isDown = ISDOWN "MouseLeft"
+
+    # Detect fresh click (was up, now down)
+    IF isDown == true && mouseWasDown == false THEN
+        IF gameOver == true THEN
+            LET TMP = CALL ResetGame WITH 0
+        ELSE
+            LET clickedCell = CALL GetCell WITH POS
+            IF clickedCell >= 0 THEN
+                IF board AT clickedCell == 0 THEN
+                    SET board AT clickedCell TO currentPlayer
+
+                    LET winner = CALL CheckWinner WITH 0
+                    IF winner != 0 THEN
+                        LET gameOver = true
+                    ELSE
+                        LET full = CALL IsBoardFull WITH 0
+                        IF full == 1 THEN
+                            LET gameOver = true
+                            LET isDraw = true
+                        ELSE
+                            IF currentPlayer == 1 THEN
+                                LET currentPlayer = 2
+                            ELSE
+                                LET currentPlayer = 1
+                            END
+                        END
+                    END
+                END
+            END
+        END
+    END
+
+    LET mouseWasDown = isDown
+
+    # Quit with Ctrl+C
+    IF ISDOWN "Control" && ISDOWN "c" THEN
+        RETURN
+    END
+
+    SLEEP 16
+END

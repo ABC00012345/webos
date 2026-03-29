@@ -400,6 +400,38 @@ class Graphics {
     getHeight() {
         return this.height;
     }
+
+    // Get mouse position on canvas, returns {x: -1, y: -1} if mouse is not on canvas
+    getMousePos() {
+        this.checkInit();
+
+        let mouseX = -1;
+        let mouseY = -1;
+
+        if (!this._mouseMoveListener) {
+            this._mouseMoveListener = (e) => {
+                const rect = this.canvas.getBoundingClientRect();
+                const scaleX = this.width / rect.width;
+                const scaleY = this.height / rect.height;
+
+                this._mouseX = Math.floor((e.clientX - rect.left) * scaleX);
+                this._mouseY = Math.floor((e.clientY - rect.top) * scaleY);
+            };
+
+            this._mouseLeaveListener = () => {
+                this._mouseX = -1;
+                this._mouseY = -1;
+            };
+
+            this.canvas.addEventListener('mousemove', this._mouseMoveListener);
+            this.canvas.addEventListener('mouseleave', this._mouseLeaveListener);
+        }
+
+        return {
+            x: this._mouseX ?? -1,
+            y: this._mouseY ?? -1
+        };
+    }
 }
 
 // WebOSProgrammingLanguage
@@ -2899,6 +2931,17 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
     keys[e.key] = false;
 });
+window.addEventListener("mousedown", (e) => {
+    if (e.button === 0) keys["MouseLeft"]   = true;
+    if (e.button === 1) keys["MouseMiddle"] = true;
+    if (e.button === 2) keys["MouseRight"]  = true;
+});
+
+window.addEventListener("mouseup", (e) => {
+    if (e.button === 0) keys["MouseLeft"]   = false;
+    if (e.button === 1) keys["MouseMiddle"] = false;
+    if (e.button === 2) keys["MouseRight"]  = false;
+});
 let wplenv = {
     outputToTerminalImmediately: (text, col = "green") => {
         // Create and append output line directly to terminal
@@ -2922,8 +2965,52 @@ let wplenv = {
         //res = res.replaceAll("\"","\\\"");
         return res;
     },
+    readFile: (path) => {
+        let output = OS.readFile(path);
+        if(output[1] == false){
+            return null; // error // return just null for programming lang instead of output[2]
+        } else {
+            return output[0]; // file content
+        }
+    },
+    writeFile: (path, content) => {
+        let exists = OS.listfiles(path);
+        if(exists[1] == true){
+            return false;//return ["Cannot write to a directory!", "red", ""];
+        }
+        
+        let output = OS.writeFile(path, content);
+        
+        if (output[0] === false) {
+            return false;//return [output[1], "red", ""];
+        } else {
+            return true;//return ["File written successfully!", "green", ""];
+        }
+    },
+    fileExists: (path) => {
+        let output = OS.readFile(path);
+        if (output[1]) {
+            return true;
+        } else {
+            return false;
+        }
+    },
     isKeyDown: (key) => {
         return !!keys[key];
+    },
+    fptoi: (x) => {
+        const n = Math.floor(Number(x));
+        return isNaN(n) ? 0 : n;
+    },
+    rand: (min, max) => {
+        min = Math.floor(Number(min));
+        max = Math.floor(Number(max));
+
+        if (isNaN(min) || isNaN(max)) return 0;
+
+        if (min > max) [min, max] = [max, min];
+
+        return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 }
 
@@ -3260,10 +3347,26 @@ class WOPLCOMPJS {
     }
 }*/
 
+
+
+
+
+
+
+
+//// #########################################################################
+//// #########################################################################
+//// #########################################################################
+//// #########################################################################
+//// #########################################################################
+
+// ------------   old version of wopl to js compiler  --------------
+/*
 class WOPLCOMPJS {
     constructor() {
         this.indentLevel = 0;
         this.declaredVars = new Set();
+        this.functions = new Set();
     }
 
     indent() {
@@ -3271,6 +3374,12 @@ class WOPLCOMPJS {
     }
 
     compile(code) {
+        // reset
+        this.declaredVars = new Set();
+        this.functions = new Set();
+        this.indentLevel = 0;
+
+
         const lines = code.split("\n");
         let js = "return (async () => {\n";
         this.indentLevel++;
@@ -3288,6 +3397,9 @@ class WOPLCOMPJS {
 
                 const name = match[1];
                 const params = match[2].split(",").map(p => p.trim()).filter(p => p);
+                
+                // save funcs
+                this.functions.add(name);
 
                 js += `${this.indent()}async function ${name}(${params.join(", ")}) {\n`;
                 this.indentLevel++;
@@ -3411,10 +3523,38 @@ class WOPLCOMPJS {
             }
 
             // ===== LET =====
+            //if (line.startsWith("LET")) {
+            //    if (line.includes("= LIST")) {
+            //        const [, name, items] = line.match(/LET (\w+) = LIST(?: (.+))?/);
+
+            //        const value = items ? `[${items}]` : "[]";
+
+            //        if (this.declaredVars.has(name)) {
+            //            js += `${this.indent()}${name} = ${value};\n`;
+            //        } else {
+            //            js += `${this.indent()}let ${name} = ${value};\n`;
+            //            this.declaredVars.add(name);
+            //        }
+            //    } else {
+            //        const [, name, value] = line.match(/LET (\w+) = (.+)/);
+
+            //        if (this.declaredVars.has(name)) {
+            //            js += `${this.indent()}${name} = ${this.transformExpr(value)};\n`;
+            //        } else {
+            //            js += `${this.indent()}let ${name} = ${this.transformExpr(value)};\n`;
+            //            this.declaredVars.add(name);
+            //        }
+            //    }
+
+            //    handled = true;
+            //    continue;
+            //}
+
+            // issue: sometimes doesnt add "let" before variable, even when not defined
+            // CAUSES issues: function can redefine global variables maybe they should?
             if (line.startsWith("LET")) {
                 if (line.includes("= LIST")) {
-                    const [, name, items] = line.match(/LET (\w+) = LIST(?: (.+))?/);
-
+                    const [, name, items] = line.match(/LET\s+(\w+)\s*=\s*LIST(?:\s+(.+))?/);
                     const value = items ? `[${items}]` : "[]";
 
                     if (this.declaredVars.has(name)) {
@@ -3424,8 +3564,8 @@ class WOPLCOMPJS {
                         this.declaredVars.add(name);
                     }
                 } else {
-                    const [, name, value] = line.match(/LET (\w+) = (.+)/);
-
+                    const [, name, value] = line.match(/LET\s+(\w+)\s*=\s*(.+)/);
+                    console.log("name:   "+name)
                     if (this.declaredVars.has(name)) {
                         js += `${this.indent()}${name} = ${this.transformExpr(value)};\n`;
                     } else {
@@ -3628,6 +3768,27 @@ class WOPLCOMPJS {
                 continue;
             }
 
+            /// maybe function being called directly
+            const funcCallMatch = line.match(/^(\w+)\s*\((.*)\)$/);
+            if (funcCallMatch) {
+                const fn = funcCallMatch[1];
+                const args = funcCallMatch[2];
+
+                if (this.functions.has(fn)) {
+                    js += `${this.indent()}await ${fn}(${args});\n`;
+                    handled = true;
+                    continue;
+                } else {
+                    // unknown function, maybe runtime global
+                    js += `${this.indent()}${fn}(${args});\n`;
+                    handled = true;
+                    continue;
+                }
+            }
+
+
+            // maybe add here check if its a variable redefinition or function call by checking defined ones
+
             // ===== FALLBACK =====
             if (!handled) {
                 js += `${this.indent()}// Unknown: ${line}\n`;
@@ -3643,14 +3804,72 @@ class WOPLCOMPJS {
     transformExpr(expr) {
         expr = expr.trim();
 
+        // maybe does issues, better use only with one variable/value like: LET Y = FPTOI X
+        //expr = expr.replace(/FPTOI\s+(.+)/g, (_, val) => {
+        //    return `wplenv.fptoi(${this.transformExpr(val)})`;
+        //});
+
+        // new version: INTRODUCED: parentheses!!!
+        // RAND(a, b)
+        // math functions ------
+        expr = expr.replace(/\bRAND\s*\((.+?),(.+?)\)/g,
+            (_, a, b) => `wplenv.rand(${this.transformExpr(a)}, ${this.transformExpr(b)})`
+        );
+
+        // FPTOI(x)
+        expr = expr.replace(/\bFPTOI\s*\((.+?)\)/g,
+            (_, x) => `wplenv.fptoi(${this.transformExpr(x)})`
+        );
+
+        // ABS(x)
+        expr = expr.replace(/\bABS\s*\((.+?)\)/g,
+            (_, x) => `Math.abs(${this.transformExpr(x)})`
+        );
+
+        // SQRT(x)
+        expr = expr.replace(/\bSQRT\s*\((.+?)\)/g,
+            (_, x) => `Math.sqrt(${this.transformExpr(x)})`
+        );
+
+        // SIN(x)
+        expr = expr.replace(/\bSIN\s*\((.+?)\)/g,
+            (_, x) => `Math.sin(${this.transformExpr(x)})`
+        );
+
+        // COS(x)
+        expr = expr.replace(/\bCOS\s*\((.+?)\)/g,
+            (_, x) => `Math.cos(${this.transformExpr(x)})`
+        );
+        //--------------
+
+
+        expr = expr.replace(/GUSED(?=\s|$|\))/g, (match, offset) => {
+            if (this._isInsideQuotes(expanded, offset)) return match;
+            return Modules.gfx.isUsed().toString();
+        });
+
+        expr = expr.replace(/\bGUSED\b/g, (_, key) => ` Modules.gfx.isUsed().toString() `);
+
         // CALL → await
         expr = expr.replace(/CALL (\w+) WITH (.+)/g, (_, fn, args) => {
             return `await ${fn}(${args})`;
         });
 
+        // doesnt work if function is called without var like: FUNC(1,2,3) and not LET Y = ...., this is maybe because transformExpr is only called on var assignment and not begining of line
+        // above still support old syntax,but eventually remove later (backward compatibility)
+        // support function calls with parentheses: LET RES = UserFunc(X, Y)
+        expr = expr.replace(/\b(\w+)\s*\((.*?)\)/g, (_, fn, args) => {
+            if (this.functions.has(fn)) {
+                return `await ${fn}(${args})`;
+            }
+            return `${fn}(${args})`;
+        });
+        // maybe later also save func params for tracking if user passes correct count
+
         // LENGTH
         expr = expr.replace(/LENGTH (\w+)/g, (_, name) => `${name}.length`);
 
+        // still not working!!!! maybe add arrays/lists as "real" extra typeso they have funcs like arr[i] or arr.at(i) or arr.length
         // FIXED ACCESS (non-greedy)
         expr = expr.replace(/(\w+)\s+AT\s+([^\s]+)/g, (_, arr, idx) => `${arr}[${idx}]`);
 
@@ -3661,9 +3880,13 @@ class WOPLCOMPJS {
         // INPUT
         expr = expr.replace(/ISDOWN\s+(".*?")/g, (_, key) => `wplenv.isKeyDown(${key})`);
 
+        expr = expr.replace(/\bMOUSEPOS\b/g, (_, key) => ` Object.values(Modules.gfx.getMousePos()) `);
+
         return expr;
     }
 
+    // print doesnt suppoort expr for now like PRINT "abs: " ABS(-8) , willfail
+    // but print is special:   it supports smth like PRINT "VAR:" VAR 
     transformPrint(expr) {
         let parts = [];
         let buffer = "";
@@ -3691,7 +3914,1145 @@ class WOPLCOMPJS {
 
         return parts.join(" + ");
     }
+}*/
+
+// old version
+//// #########################################################################
+//// #########################################################################
+//// #########################################################################
+//// #########################################################################
+// new:
+
+// ============================================================
+//  WOPL Compiler  –  JavaScript backend
+//  Supports: variables, functions, classes, built-in Array &
+//  String types, control flow, graphics, exec, sleep, I/O
+// ============================================================
+
+// ──────────────────────────────────────────────────────────────
+//  Runtime helpers injected into every compiled program.
+//  Paste this block alongside wplenv in your HTML page.
+// ──────────────────────────────────────────────────────────────
+const WOPL_RUNTIME = `
+// ── WOPLString ───────────────────────────────────────────────
+class WOPLString {
+    constructor(v = "") { this._v = String(v); }
+
+    // primitives
+    get length()            { return this._v.length; }
+    toString()              { return this._v; }
+    valueOf()               { return this._v; }
+
+    // methods
+    contains(sub)           { return this._v.includes(String(sub instanceof WOPLString ? sub._v : sub)); }
+    startsWith(sub)         { return this._v.startsWith(String(sub instanceof WOPLString ? sub._v : sub)); }
+    endsWith(sub)           { return this._v.endsWith(String(sub instanceof WOPLString ? sub._v : sub)); }
+    upper()                 { return new WOPLString(this._v.toUpperCase()); }
+    lower()                 { return new WOPLString(this._v.toLowerCase()); }
+    trim()                  { return new WOPLString(this._v.trim()); }
+    replace(a, b)           { return new WOPLString(this._v.replaceAll(String(a instanceof WOPLString ? a._v : a), String(b instanceof WOPLString ? b._v : b))); }
+    split(sep)              { return new WOPLArray(this._v.split(String(sep instanceof WOPLString ? sep._v : sep)).map(s => new WOPLString(s))); }
+    splitlines()            { return new WOPLArray(this._v.split(/\\r?\\n|\\r|\\n/g).map(s => new WOPLString(s))); }
+    
+    charAt(i)               { return new WOPLString(this._v.charAt(Number(i))); }
+    indexOf(sub)            { return this._v.indexOf(String(sub instanceof WOPLString ? sub._v : sub)); }
+    substring(a, b)         { return new WOPLString(b !== undefined ? this._v.substring(Number(a), Number(b)) : this._v.substring(Number(a))); }
+    toNumber()              { return Number(this._v); }
+    repeat(n)               { return new WOPLString(this._v.repeat(Number(n))); }
+
+    // operator helpers
+    concat(other)           { return new WOPLString(this._v + String(other instanceof WOPLString ? other._v : other)); }
+    equals(other)           { return this._v === String(other instanceof WOPLString ? other._v : other); }
 }
+
+// ── WOPLArray ─────────────────────────────────────────────────
+class WOPLArray {
+    constructor(items = []) { this._items = Array.isArray(items) ? [...items] : []; }
+
+    get length()            { return this._items.length; }
+    toString()              { return "[" + this._items.map(x => x instanceof WOPLString ? '"' + x._v + '"' : String(x)).join(", ") + "]"; }
+
+    get(i)                  { const v = this._items[Number(i)]; return v === undefined ? null : v; }
+    set(i, v)               { this._items[Number(i)] = v; return v; }
+    push(...vals)           { this._items.push(...vals); return this; }
+    pop()                   { return this._items.pop() ?? null; }
+    shift()                 { return this._items.shift() ?? null; }
+    unshift(v)              { this._items.unshift(v); return this; }
+    contains(v)             { return this._items.some(x => woplEq(x, v)); }
+    indexOf(v)              { return this._items.findIndex(x => woplEq(x, v)); }
+    removeAt(i)             { this._items.splice(Number(i), 1); return this; }
+    remove(v)               { const i = this.indexOf(v); if (i !== -1) this._items.splice(i, 1); return this; }
+    slice(a, b)             { return new WOPLArray(b !== undefined ? this._items.slice(Number(a), Number(b)) : this._items.slice(Number(a))); }
+    concat(other)           { return new WOPLArray([...this._items, ...(other instanceof WOPLArray ? other._items : [other])]); }
+    join(sep)               { return new WOPLString(this._items.map(x => x instanceof WOPLString ? x._v : String(x)).join(String(sep instanceof WOPLString ? sep._v : sep))); }
+    reverse()               { return new WOPLArray([...this._items].reverse()); }
+    // raw JS iterator so FOR..OF works internally if needed
+    [Symbol.iterator]()     { return this._items[Symbol.iterator](); }
+}
+
+// ── File (descriptor) ─────────────────────────────────────────────────
+class File {
+    constructor(name = "") { this._name = name.toString(); } // name is a WOPLString object!!!!
+
+    get name() { return new WOPLString(this._name); } // need to also convert back to WOPLString
+    read() { return new WOPLString(wplenv.readFile(this._name)); }
+    exists() { return wplenv.fileExists(this._name); }
+    write(content) { return wplenv.writeFile(this._name, content.toString()); }
+
+}
+
+// equality helper used by array.contains etc.
+function woplEq(a, b) {
+    if (a instanceof WOPLString && b instanceof WOPLString) return a._v === b._v;
+    if (a instanceof WOPLString) return a._v === String(b);
+    if (b instanceof WOPLString) return String(a) === b._v;
+    return a === b;
+}
+
+// coerce anything to a printable string
+function woplStr(v) {
+    if (v instanceof WOPLString) return v._v;
+    if (v instanceof WOPLArray)  return v.toString();
+    if (v === null || v === undefined) return "null";
+    return String(v);
+}
+`;
+
+// ──────────────────────────────────────────────────────────────
+//  Tokeniser
+// ──────────────────────────────────────────────────────────────
+class Token {
+    constructor(type, value, raw) {
+        this.type  = type;   // 'KW','IDENT','NUMBER','STRING','OP','PUNCT','EOL'
+        this.value = value;
+        this.raw   = raw ?? value;
+    }
+}
+
+const KWS = new Set([
+    "LET","SET","PRINT","IF","THEN","ELSE","ELSEIF","END","WHILE",
+    "ITER","TO","STEP","WITH","FUNCTION","PARAM","RETURN","EXEC","SLEEP",
+    "APPEND","REMOVE","INDEX","FROM","AT","LIST","BREAK","CONTINUE",
+    "CALL","RAND","FPTOI","ABS","SQRT","SIN","COS","LENGTH","ISDOWN",
+    "MOUSEPOS","GUSED","GINIT","GCLOSE","GCLEAR","GPIXEL","GLINE",
+    "GRECT","GFRECT","GCIRCLE","GFCIRCLE","GTEXT",
+    // new keywords
+    "CLASS","METHOD","NEW","FIELD","EXTENDS","SUPER","INSTANCEOF",
+    "AND","OR","NOT","TRUE","FALSE","NULL",
+    "STRING","ARRAY","FOREACH","IN",
+    // Note: START is intentionally NOT here — it's matched by .value only
+    // where structurally expected (WHILE...START, FUNCTION...START) so
+    // users can freely use "Start", "start" etc. as identifiers/params.
+]);
+
+function tokeniseLine(line) {
+    const tokens = [];
+    let i = 0;
+    const len = line.length;
+
+    while (i < len) {
+        // skip whitespace
+        if (line[i] === " " || line[i] === "\t") { i++; continue; }
+
+        // comment
+        if (line[i] === "#") break;
+
+        // string literal
+        if (line[i] === '"') {
+            let j = i + 1;
+            let str = "";
+            while (j < len && line[j] !== '"') {
+                if (line[j] === "\\") { str += line[j] + (line[j+1] ?? ""); j += 2; }
+                else str += line[j++];
+            }
+            tokens.push(new Token("STRING", str, `"${str}"`));
+            i = j + 1;
+            continue;
+        }
+
+        // dot — always PUNCT (member access); never start a number
+        if (line[i] === ".") {
+            tokens.push(new Token("PUNCT", "."));
+            i++;
+            continue;
+        }
+
+        // number  (digits only — dot is handled above as PUNCT)
+        if (/\d/.test(line[i]) || (line[i] === "-" && /\d/.test(line[i+1] ?? "") && tokens.length === 0)) {
+            let j = i; let num = "";
+            if (line[j] === "-") { num += "-"; j++; }
+            // allow one decimal point inside a number
+            let hasDot = false;
+            while (j < len && (/\d/.test(line[j]) || (line[j] === "." && !hasDot && /\d/.test(line[j+1] ?? "")))) {
+                if (line[j] === ".") hasDot = true;
+                num += line[j++];
+            }
+            tokens.push(new Token("NUMBER", Number(num), num));
+            i = j;
+            continue;
+        }
+
+        // identifier / keyword
+        if (/[A-Za-z_]/.test(line[i])) {
+            let j = i;
+            while (j < len && /[A-Za-z0-9_]/.test(line[j])) j++;
+            const word = line.slice(i, j);
+            const upper = word.toUpperCase();
+            if (KWS.has(upper))       tokens.push(new Token("KW", upper, word));
+            else if (upper === "TRUE") tokens.push(new Token("BOOL", true, word));
+            else if (upper === "FALSE")tokens.push(new Token("BOOL", false, word));
+            else if (upper === "NULL") tokens.push(new Token("NULL", null, word));
+            else                       tokens.push(new Token("IDENT", word, word));
+            i = j;
+            continue;
+        }
+
+        // multi-char operators  (order matters — longest match first)
+        const two = line.slice(i, i+2);
+        if (["<=",">=","!=","==","&&","||","**","+=","-=","*=","/=","++","--"].includes(two)) {
+            tokens.push(new Token("OP", two)); i += 2; continue;
+        }
+
+        // single-char operators / punctuation
+        const ch = line[i];
+        if ("+-*/%^<>=!".includes(ch)) { tokens.push(new Token("OP", ch)); i++; continue; }
+        if ("()[]{},.;:".includes(ch)) { tokens.push(new Token("PUNCT", ch)); i++; continue; }
+
+        // unknown → treat as ident
+        tokens.push(new Token("IDENT", ch, ch));
+        i++;
+    }
+
+    tokens.push(new Token("EOL", "EOL"));
+    return tokens;
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Expression parser  (Pratt / recursive-descent)
+//  Returns a JS expression string.
+// ──────────────────────────────────────────────────────────────
+class ExprParser {
+    constructor(tokens, compiler) {
+        this.tokens  = tokens;
+        this.pos     = 0;
+        this.compiler = compiler;
+    }
+
+    peek()  { return this.tokens[this.pos] ?? new Token("EOL","EOL"); }
+    next()  { return this.tokens[this.pos++] ?? new Token("EOL","EOL"); }
+    expect(val) {
+        const t = this.next();
+        if (t.value !== val) throw new Error(`Expected '${val}', got '${t.value}'`);
+        return t;
+    }
+    check(val) { return this.peek().value === val; }
+    checkType(type) { return this.peek().type === type; }
+    atEnd() { return this.peek().type === "EOL"; }
+
+    // ── parse a full expression (lowest precedence: OR) ────────
+    parse() { return this.parseOr(); }
+
+    parseOr() {
+        let left = this.parseAnd();
+        while ((this.check("OR") && this.peek().type === "KW") || (this.check("||") && this.peek().type === "OP")) {
+            this.next();
+            left = `(${left} || ${this.parseAnd()})`;
+        }
+        return left;
+    }
+
+    parseAnd() {
+        let left = this.parseNot();
+        while ((this.check("AND") && this.peek().type === "KW") || (this.check("&&") && this.peek().type === "OP")) {
+            this.next();
+            left = `(${left} && ${this.parseNot()})`;
+        }
+        return left;
+    }
+
+    parseNot() {
+        if ((this.check("NOT") && this.peek().type === "KW") ||
+            (this.check("!") && this.peek().type === "OP")) {
+            this.next();
+            return `(!${this.parseNot()})`;
+        }
+        return this.parseComparison();
+    }
+
+    parseComparison() {
+        let left = this.parseAddSub();
+        const cmpOps = new Set(["<","<=",">",">=","==","!=","="]);
+        while (this.peek().type === "OP" && cmpOps.has(this.peek().value)) {
+            const op = this.next().value;
+            const jsOp = op === "=" ? "===" : op === "!=" ? "!==" : op;
+            left = `(${left} ${jsOp} ${this.parseAddSub()})`;
+        }
+        return left;
+    }
+
+    parseAddSub() {
+        let left = this.parseMulDiv();
+        while ((this.check("+") || this.check("-")) && this.peek().type === "OP") {
+            const op = this.next().value;
+            const right = this.parseMulDiv();
+            if (op === "+") left = `(__woplAdd(${left}, ${right}))`;
+            else            left = `(${left} - ${right})`;
+        }
+        return left;
+    }
+
+    parseMulDiv() {
+        let left = this.parsePow();
+        while ((this.check("*") || this.check("/") || this.check("%")) && this.peek().type === "OP") {
+            const op = this.next().value;
+            left = `(${left} ${op} ${this.parsePow()})`;
+        }
+        return left;
+    }
+
+    parsePow() {
+        let left = this.parseUnary();
+        if ((this.check("**") || this.check("^")) && this.peek().type === "OP") {
+            this.next();
+            left = `Math.pow(${left}, ${this.parsePow()})`;
+        }
+        return left;
+    }
+
+    parseUnary() {
+        if (this.check("-") && this.peek().type === "OP") {
+            this.next();
+            return `(-(${this.parseUnary()}))`;
+        }
+        return this.parsePostfix();
+    }
+
+    // handles  expr.method(args)  and  expr[index]
+    parsePostfix() {
+        let left = this.parsePrimary();
+
+        while (true) {
+            if (this.check(".") && this.peek().type === "PUNCT") {
+                this.next(); // consume '.'
+                const member = this.next(); // method/field name — use raw (original case)
+                const memberName = member.raw ?? member.value;
+                if (this.check("(") && this.peek().type === "PUNCT") {
+                    this.next(); // consume '('
+                    const args = this.parseArgList(")");
+                    this.expect(")");
+                    // All class methods are async — use await so callers get the resolved value.
+                    // Built-in WOPLString/WOPLArray methods are NOT async (they're synchronous),
+                    // so we detect them: if the object is a known WOPL builtin method we skip await.
+                    // Strategy: always emit await — sync methods return non-Promise values and
+                    // `await nonPromise` is a no-op in JS, so this is safe and universal.
+                    left = `(await ${left}.${memberName}(${args}))`;
+                } else {
+                    // field access — lowercase if it was a KW like LENGTH
+                    const fieldName = member.type === "KW" ? memberName.toLowerCase() : memberName;
+                    left = `${left}.${fieldName}`;
+                }
+            } else if (this.check("[") && this.peek().type === "PUNCT") {
+                this.next();
+                const idx = this.parse();
+                this.expect("]");
+                left = `(await ${left}.get(${idx}))`;
+            } else {
+                break;
+            }
+        }
+
+        return left;
+    }
+
+    parseArgList(closingPunct) {
+        const args = [];
+        while (!this.check(closingPunct) && !this.atEnd()) {
+            args.push(this.parse());
+            if (this.check(",")) this.next();
+        }
+        return args.join(", ");
+    }
+
+    parsePrimary() {
+        const t = this.peek();
+
+        // grouped expression
+        if (t.type === "PUNCT" && t.value === "(") {
+            this.next();
+            const inner = this.parse();
+            this.expect(")");
+            return inner;
+        }
+
+        // literals
+        if (t.type === "NUMBER") { this.next(); return String(t.value); }
+        if (t.type === "BOOL")   { this.next(); return String(t.value); }
+        if (t.type === "NULL")   { this.next(); return "null"; }
+        if (t.type === "STRING") {
+            this.next();
+            return `new WOPLString(${JSON.stringify(t.value)})`;
+        }
+
+        // TRUE / FALSE (caught as KW above just in case)
+        if (t.type === "KW" && t.value === "TRUE")  { this.next(); return "true"; }
+        if (t.type === "KW" && t.value === "FALSE") { this.next(); return "false"; }
+        if (t.type === "KW" && t.value === "NULL")  { this.next(); return "null"; }
+
+        // LIST literal  LIST 1, 2, 3  or just LIST
+        if (t.type === "KW" && t.value === "LIST") {
+            this.next();
+            const items = [];
+            while (!this.atEnd() && !this.check(")") && !this.check("]") && !this.check(",")) {
+                items.push(this.parse());
+                if (this.check(",")) { this.next(); } else break;
+            }
+            return `new WOPLArray([${items.join(", ")}])`;
+        }
+
+        // ARRAY( items, ... )  —  explicit constructor syntax
+        if (t.type === "KW" && t.value === "ARRAY") {
+            this.next();
+            if (this.check("(")) {
+                this.next();
+                const args = this.parseArgList(")");
+                this.expect(")");
+                return `new WOPLArray([${args}])`;
+            }
+            return "new WOPLArray([])";
+        }
+
+        // STRING( val )  — explicit constructor
+        if (t.type === "KW" && t.value === "STRING") {
+            this.next();
+            if (this.check("(")) {
+                this.next();
+                const arg = this.parse();
+                this.expect(")");
+                return `new WOPLString(woplStr(${arg}))`;
+            }
+            return 'new WOPLString("")';
+        }
+
+        // NEW ClassName(args)
+        if (t.type === "KW" && t.value === "NEW") {
+            this.next();
+            const cls = this.next().value;
+            if (this.check("(")) {
+                this.next();
+                const args = this.parseArgList(")");
+                this.expect(")");
+                return `new ${cls}(${args})`;
+            }
+            return `new ${cls}()`;
+        }
+
+        // built-in functions
+        const builtins = {
+            RAND:  (args) => `wplenv.rand(${args})`,
+            FPTOI: (args) => `wplenv.fptoi(${args})`,
+            ABS:   (args) => `Math.abs(${args})`,
+            SQRT:  (args) => `Math.sqrt(${args})`,
+            SIN:   (args) => `Math.sin(${args})`,
+            COS:   (args) => `Math.cos(${args})`,
+            LENGTH:(args) => `(${args}).length`,
+            ISDOWN:(args) => `wplenv.isKeyDown(${args})`,
+            INSTANCEOF: (args) => {
+                const parts = args.split(",");
+                return `(${parts[0].trim()} instanceof ${parts[1].trim()})`;
+            },
+        };
+
+        if (t.type === "KW" && builtins[t.value]) {
+            const fn = builtins[t.value];
+            this.next();
+            this.expect("(");
+            const args = this.parseArgList(")");
+            this.expect(")");
+            return fn(args);
+        }
+
+        // MOUSEPOS keyword
+        if (t.type === "KW" && t.value === "MOUSEPOS") {
+            this.next();
+            return `new WOPLArray(Object.values(Modules.gfx.getMousePos()))`;
+        }
+        if (t.type === "KW" && t.value === "GUSED") {
+            this.next();
+            return `Modules.gfx.isUsed()`;
+        }
+
+        // CALL FnName WITH arg1, arg2
+        if (t.type === "KW" && t.value === "CALL") {
+            this.next();
+            const fn = this.next().value;
+            let args = "";
+            if (this.check("WITH") && this.peek().type === "KW") {
+                this.next();
+                const argTokens = [];
+                while (!this.atEnd()) {
+                    argTokens.push(this.parse());
+                    if (this.check(",")) { this.next(); } else break;
+                }
+                args = argTokens.join(", ");
+            }
+            return `(await ${fn}(${args}))`;
+        }
+
+        // identifier → could be a function call
+        if (t.type === "IDENT") {
+            this.next();
+            if (this.check("(") && this.peek().type === "PUNCT") {
+                this.next();
+                const args = this.parseArgList(")");
+                this.expect(")");
+                const isUserFn = this.compiler.functions.has(t.value);
+                if (isUserFn) return `(await ${t.value}(${args}))`;
+                return `${t.value}(${args})`;
+            }
+            return t.value;
+        }
+
+        // unknown keyword used as identifier (e.g. SUPER)
+        if (t.type === "KW") {
+            this.next();
+            return t.value;
+        }
+
+        this.next();
+        return "undefined";
+    }
+}
+
+// helper added at runtime for string + number coercion
+const WOPL_ADD_HELPER = `
+function __woplAdd(a, b) {
+    if (a instanceof WOPLString || b instanceof WOPLString)
+        return new WOPLString(woplStr(a) + woplStr(b));
+    return a + b;
+}
+`;
+
+// ──────────────────────────────────────────────────────────────
+//  Main compiler class
+// ──────────────────────────────────────────────────────────────
+class WOPLCOMPJS {
+    constructor() {
+        this.reset();
+    }
+
+    reset() {
+        this.indentLevel    = 0;
+        this.scopeStack     = [new Set()];
+        this.functions      = new Set();
+        this.classes        = new Set();
+        this.inClass        = null;
+        this.inMethod       = false;
+        this.currentParent  = null;
+        this._needsAutoSuper = false;
+    }
+
+    // ── scope helpers ─────────────────────────────────────────────
+    _currentScope()        { return this.scopeStack[this.scopeStack.length - 1]; }
+    _pushScope()           { this.scopeStack.push(new Set()); }
+    _popScope()            { if (this.scopeStack.length > 1) this.scopeStack.pop(); }
+    _isDeclared(name) {
+        // search from innermost scope outward
+        for (let k = this.scopeStack.length - 1; k >= 0; k--) {
+            if (this.scopeStack[k].has(name)) return true;
+        }
+        return false;
+    }
+    _declare(name)         { this._currentScope().add(name); }
+
+    indent() { return "    ".repeat(this.indentLevel); }
+
+    // ── parse expression from a token array starting at `start` ──
+    parseExpr(tokens, start = 0) {
+        // always ensure there is an EOL sentinel
+        const relevant = tokens.slice(start);
+        if (!relevant.length || relevant[relevant.length-1]?.type !== "EOL") {
+            relevant.push(new Token("EOL", "EOL"));
+        }
+        const parser = new ExprParser(relevant, this);
+        return parser.parse();
+    }
+
+    // shortcut: parse expression from raw string
+    exprFromStr(str) {
+        const tokens = tokeniseLine(str);
+        return this.parseExpr(tokens);
+    }
+
+    // ── compile ───────────────────────────────────────────────────
+    compile(code) {
+        this.reset();
+
+        const lines = code.split("\n");
+        let js = "return (async () => {\n" + WOPL_RUNTIME + "\n" + WOPL_ADD_HELPER + "\n";
+        this.indentLevel = 1;
+
+        let i = 0;
+        while (i < lines.length) {
+            const rawLine = lines[i];
+            const line    = rawLine.trim();
+            i++;
+
+            if (!line || line.startsWith("#")) continue;
+
+            const tokens  = tokeniseLine(line);
+            const firstKW = tokens[0]?.value;
+
+            // ── CLASS ───────────────────────────────────────────
+            if (firstKW === "CLASS") {
+                const name = tokens[1].value;
+                this.classes.add(name);
+                this.inClass = name;
+                this.currentParent = null;
+                let parentStr = "";
+                if (tokens[2]?.value === "EXTENDS") {
+                    this.currentParent = tokens[3].value;
+                    parentStr = ` extends ${tokens[3].value}`;
+                }
+                js += `${this.indent()}class ${name}${parentStr} {\n`;
+                this._pushScope();
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── END CLASS / END METHOD ──────────────────────────
+            if (firstKW === "END" && tokens[1]?.value === "CLASS") {
+                this._popScope();
+                this.indentLevel--;
+                js += `${this.indent()}}\n`;
+                this.inClass = null;
+                this.currentParent = null;
+                continue;
+            }
+
+            // ── METHOD ──────────────────────────────────────────
+            if (firstKW === "METHOD") {
+                // Use raw (original case) for method name to avoid KW uppercasing (e.g. "set" → "SET")
+                const name = tokens[1].raw ?? tokens[1].value;
+                let params = [];
+                let idx = 2;
+                if (tokens[idx]?.value === "PARAM") {
+                    idx++;
+                    while (tokens[idx] && tokens[idx].value !== "START" && tokens[idx].type !== "EOL") {
+                        if (tokens[idx].type === "IDENT" || tokens[idx].type === "KW")
+                            params.push(tokens[idx].raw ?? tokens[idx].value);
+                        idx++;
+                        if (tokens[idx]?.value === ",") idx++;
+                    }
+                }
+                const methodName = (name === "INIT") ? "constructor" : name;
+                // Methods are async so user-defined function calls (which use await) work inside them.
+                // Constructors cannot be async in JS — calls to async user functions inside INIT
+                // will still work as fire-and-forget; for most WOPL use cases this is fine.
+                const asyncPrefix = (methodName === "constructor") ? "" : "async ";
+                js += `${this.indent()}${asyncPrefix}${methodName}(${params.join(", ")}) {\n`;
+                this._pushScope();
+                params.forEach(p => this._declare(p));
+                this.indentLevel++;
+                // Auto-inject super() at the top of derived class constructors
+                // so JS doesn't throw before `this` is accessible via FIELD assignments.
+                // The user can still write SUPER(...) explicitly to pass args — we detect
+                // that by peeking ahead in the source; but since we compile line-by-line
+                // we just always emit super() here for derived classes, and if the user
+                // writes SUPER(...) we suppress the auto-one via a flag.
+                this._needsAutoSuper = (methodName === "constructor" && !!this.currentParent);
+                this.inMethod = true;
+                continue;
+            }
+
+            // ── END METHOD ──────────────────────────────────────
+            if (firstKW === "END" && tokens[1]?.value === "METHOD") {
+                this._popScope();
+                this.indentLevel--;
+                js += `${this.indent()}}\n`;
+                this.inMethod = false;
+                this._needsAutoSuper = false;
+                continue;
+            }
+
+            // ── FIELD ───────────────────────────────────────────
+            if (firstKW === "FIELD") {
+                // Emit pending auto-super before first `this` access
+                if (this._needsAutoSuper) {
+                    js += `${this.indent()}super();\n`;
+                    this._needsAutoSuper = false;
+                }
+                // Use raw (original case) so field names like "step" aren't uppercased to "STEP"
+                const name = tokens[1].raw ?? tokens[1].value;
+                if (tokens[2]?.value === "=") {
+                    const expr = this.parseExpr(tokens, 3);
+                    js += `${this.indent()}this.${name} = ${expr};\n`;
+                } else {
+                    js += `${this.indent()}this.${name} = null;\n`;
+                }
+                continue;
+            }
+
+            // ── FUNCTION ────────────────────────────────────────
+            if (firstKW === "FUNCTION") {
+                const name   = tokens[1].value;
+                let params   = [];
+                let idx      = 2;
+                if (tokens[idx]?.value === "PARAM") {
+                    idx++;
+                    while (tokens[idx] && tokens[idx].value !== "START" && tokens[idx].type !== "EOL") {
+                        if (tokens[idx].type === "IDENT") params.push(tokens[idx].value);
+                        idx++;
+                        if (tokens[idx]?.value === ",") idx++;
+                    }
+                }
+                this.functions.add(name);
+                js += `${this.indent()}async function ${name}(${params.join(", ")}) {\n`;
+                this._pushScope();
+                params.forEach(p => this._declare(p));
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── END (generic) ────────────────────────────────────
+            if (firstKW === "END") {
+                this._popScope();
+                this.indentLevel--;
+                js += `${this.indent()}}\n`;
+                continue;
+            }
+
+            // ── RETURN ──────────────────────────────────────────
+            if (firstKW === "RETURN") {
+                const expr = this.parseExpr(tokens, 1);
+                js += `${this.indent()}return ${expr};\n`;
+                continue;
+            }
+
+            // ── IF / ELSEIF / ELSE ───────────────────────────────
+            if (firstKW === "IF") {
+                // collect tokens between IF and THEN
+                const thenIdx = tokens.findIndex(t => t.value === "THEN");
+                const cond    = this.parseExpr(tokens.slice(1, thenIdx < 0 ? undefined : thenIdx));
+                js += `${this.indent()}if (${cond}) {\n`;
+                this._pushScope();
+                this.indentLevel++;
+                continue;
+            }
+
+            if (firstKW === "ELSEIF") {
+                const thenIdx = tokens.findIndex(t => t.value === "THEN");
+                const cond    = this.parseExpr(tokens.slice(1, thenIdx < 0 ? undefined : thenIdx));
+                this._popScope();
+                this.indentLevel--;
+                js += `${this.indent()}} else if (${cond}) {\n`;
+                this._pushScope();
+                this.indentLevel++;
+                continue;
+            }
+
+            if (firstKW === "ELSE") {
+                this._popScope();
+                this.indentLevel--;
+                js += `${this.indent()}} else {\n`;
+                this._pushScope();
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── WHILE ────────────────────────────────────────────
+            if (firstKW === "WHILE") {
+                const startIdx = tokens.findIndex(t => t.value === "START");
+                const cond     = this.parseExpr(tokens.slice(1, startIdx < 0 ? undefined : startIdx));
+                js += `${this.indent()}while (${cond}) {\n`;
+                this._pushScope();
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── ITER ─────────────────────────────────────────────
+            if (firstKW === "ITER") {
+                // ITER <start> TO <end> [STEP <step>] WITH <var>
+                let idx = 1;
+                const startExprTokens = [];
+                while (tokens[idx] && tokens[idx].value !== "TO") startExprTokens.push(tokens[idx++]);
+                idx++; // skip TO
+                const endExprTokens = [];
+                while (tokens[idx] && tokens[idx].value !== "STEP" && tokens[idx].value !== "WITH") endExprTokens.push(tokens[idx++]);
+
+                let stepExpr = "1";
+                if (tokens[idx]?.value === "STEP") {
+                    idx++;
+                    const stepToks = [];
+                    while (tokens[idx] && tokens[idx].value !== "WITH") stepToks.push(tokens[idx++]);
+                    stepExpr = this.parseExpr(stepToks);
+                }
+
+                idx++; // skip WITH
+                const varName  = tokens[idx].value;
+                const startExpr = this.parseExpr(startExprTokens);
+                const endExpr   = this.parseExpr(endExprTokens);
+
+                const dir = stepExpr.trim().startsWith("-") ? ">=" : "<=";
+                js += `${this.indent()}for (let ${varName} = ${startExpr}; ${varName} ${dir} ${endExpr}; ${varName} += ${stepExpr}) {\n`;
+                this._pushScope();
+                this._declare(varName);  // loop var is scoped to the loop
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── FOREACH (iterate over array) ─────────────────────
+            // FOREACH item IN arrayVar
+            if (firstKW === "FOREACH") {
+                const itemVar = tokens[1].value;
+                // skip IN
+                const arrExpr = this.parseExpr(tokens, 3);
+                js += `${this.indent()}for (let ${itemVar} of ${arrExpr}) {\n`;
+                this._pushScope();
+                this._declare(itemVar);
+                this.indentLevel++;
+                continue;
+            }
+
+            // ── LET x = EXEC cmd  (must come before plain LET) ──
+            if (firstKW === "LET" && tokens.some(t => t.value === "EXEC")) {
+                const name    = tokens[1].value;
+                const execIdx = tokens.findIndex(t => t.value === "EXEC");
+                // everything after EXEC is the raw command (preserve original spacing)
+                const cmd     = tokens.slice(execIdx + 1).filter(t => t.type !== "EOL").map(t => t.raw).join(" ");
+                if (this._isDeclared(name)) {
+                    js += `${this.indent()}${name} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                } else {
+                    js += `${this.indent()}let ${name} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                    this._declare(name);
+                }
+                continue;
+            }
+
+            // ── LET x = expr ─────────────────────────────────────
+            if (firstKW === "LET") {
+                const name = tokens[1].value;
+                // skip '='
+                const expr = this.parseExpr(tokens, 3);
+                if (this._isDeclared(name)) {
+                    js += `${this.indent()}${name} = ${expr};\n`;
+                } else {
+                    js += `${this.indent()}let ${name} = ${expr};\n`;
+                    this._declare(name);
+                }
+                continue;
+            }
+
+            // ── this.field = expr  (field reassignment without FIELD kw) ──
+            // tokens: IDENT:this  PUNCT:.  IDENT-or-KW:fieldName  OP:...
+            if (tokens[0]?.type === "IDENT" && tokens[0]?.value === "this" &&
+                tokens[1]?.value === "." && tokens[1]?.type === "PUNCT" &&
+                (tokens[2]?.type === "IDENT" || tokens[2]?.type === "KW")) {
+                const field  = tokens[2].raw ?? tokens[2].value;  // preserve original case
+                const op     = tokens[3]?.value;
+                const opType = tokens[3]?.type;
+
+                // this.x = expr
+                if (op === "=" && opType === "OP") {
+                    const expr = this.parseExpr(tokens, 4);
+                    js += `${this.indent()}this.${field} = ${expr};\n`;
+                    continue;
+                }
+                // this.x += expr  this.x -= expr  etc.
+                if (opType === "OP" && ["+=","-=","*=","/="].includes(op)) {
+                    const expr = this.parseExpr(tokens, 4);
+                    if (op === "+=") {
+                        js += `${this.indent()}this.${field} = __woplAdd(this.${field}, ${expr});\n`;
+                    } else {
+                        js += `${this.indent()}this.${field} ${op} ${expr};\n`;
+                    }
+                    continue;
+                }
+                // this.x++  this.x--
+                if (opType === "OP" && (op === "++" || op === "--")) {
+                    js += `${this.indent()}this.${field}${op};\n`;
+                    continue;
+                }
+            }
+
+            // ── Bare reassignment:  x = expr  ────────────────────
+            // (IDENT followed by plain '=', not '==')
+            if (tokens[0]?.type === "IDENT" && tokens[1]?.value === "=" && tokens[1]?.type === "OP") {
+                const name = tokens[0].value;
+                const expr = this.parseExpr(tokens, 2);
+                if (this._isDeclared(name)) {
+                    js += `${this.indent()}${name} = ${expr};\n`;
+                } else {
+                    // auto-declare in current scope (implicit declaration)
+                    js += `${this.indent()}let ${name} = ${expr};\n`;
+                    this._declare(name);
+                }
+                continue;
+            }
+
+            // ── Compound assignment:  x += expr  x -= expr  etc. ─
+            if (tokens[0]?.type === "IDENT" &&
+                tokens[1]?.type === "OP" &&
+                ["+=","-=","*=","/="].includes(tokens[1]?.value)) {
+                const name = tokens[0].value;
+                const op   = tokens[1].value;
+                const expr = this.parseExpr(tokens, 2);
+                if (!this._isDeclared(name)) {
+                    // auto-declare initialised to 0
+                    js += `${this.indent()}let ${name} = 0;\n`;
+                    this._declare(name);
+                }
+                if (op === "+=") {
+                    // use __woplAdd so string concatenation works
+                    js += `${this.indent()}${name} = __woplAdd(${name}, ${expr});\n`;
+                } else {
+                    js += `${this.indent()}${name} ${op} ${expr};\n`;
+                }
+                continue;
+            }
+
+            // ── Increment / decrement:  x++  x-- ─────────────────
+            if (tokens[0]?.type === "IDENT" && tokens[1]?.type === "OP" &&
+                (tokens[1]?.value === "++" || tokens[1]?.value === "--")) {
+                const name = tokens[0].value;
+                const op   = tokens[1].value;
+                if (!this._isDeclared(name)) {
+                    js += `${this.indent()}let ${name} = 0;\n`;
+                    this._declare(name);
+                }
+                js += `${this.indent()}${name}${op};\n`;
+                continue;
+            }
+
+            // ── SET ───────────────────────────────────────────────
+            // SET arrName AT index TO value
+            // SET obj.field TO value
+            if (firstKW === "SET") {
+                const target = tokens[1].value;
+
+                // check for dot-access:  SET obj.field TO value
+                if (tokens[2]?.value === ".") {
+                    const field   = tokens[3].value;
+                    const toIdx   = tokens.findIndex(t => t.value === "TO");
+                    const val     = this.parseExpr(tokens, toIdx + 1);
+                    js += `${this.indent()}${target}.${field} = ${val};\n`;
+                    continue;
+                }
+
+                // SET arr AT index TO value
+                const atIdx  = tokens.findIndex(t => t.value === "AT");
+                const toIdx  = tokens.findIndex(t => t.value === "TO");
+                const idx    = this.parseExpr(tokens.slice(atIdx + 1, toIdx));
+                const val    = this.parseExpr(tokens, toIdx + 1);
+                js += `${this.indent()}${target}.set(${idx}, ${val});\n`;
+                continue;
+            }
+
+            // ── APPEND ────────────────────────────────────────────
+            // APPEND val1, val2 TO arrName
+            if (firstKW === "APPEND") {
+                const toIdx = tokens.findIndex(t => t.value === "TO");
+                const arr   = tokens[toIdx + 1].value;
+                // parse comma-separated values between APPEND and TO
+                const valTokens = tokens.slice(1, toIdx);
+                // split on ',' tokens
+                const groups = [];
+                let cur = [];
+                for (const tok of valTokens) {
+                    if (tok.type === "PUNCT" && tok.value === ",") { groups.push(cur); cur = []; }
+                    else if (tok.type !== "EOL") cur.push(tok);
+                }
+                if (cur.length) groups.push(cur);
+                for (const g of groups) {
+                    js += `${this.indent()}${arr}.push(${this.parseExpr(g)});\n`;
+                }
+                continue;
+            }
+
+            // ── REMOVE ───────────────────────────────────────────
+            // REMOVE INDEX i FROM arr  |  REMOVE val FROM arr
+            if (firstKW === "REMOVE") {
+                if (tokens[1]?.value === "INDEX") {
+                    const fromIdx = tokens.findIndex(t => t.value === "FROM");
+                    const idx     = this.parseExpr(tokens.slice(2, fromIdx));
+                    const arr     = tokens[fromIdx + 1].value;
+                    js += `${this.indent()}${arr}.removeAt(${idx});\n`;
+                } else {
+                    const fromIdx = tokens.findIndex(t => t.value === "FROM");
+                    const val     = this.parseExpr(tokens.slice(1, fromIdx));
+                    const arr     = tokens[fromIdx + 1].value;
+                    js += `${this.indent()}${arr}.remove(${val});\n`;
+                }
+                continue;
+            }
+
+            // ── PRINT ─────────────────────────────────────────────
+            // PRINT now supports full expressions:  PRINT "Result: " + x
+            // and old space-separated concat:        PRINT "Result: " x
+            if (firstKW === "PRINT") {
+                // Everything after PRINT is an expression (supporting '+' and implicit concat)
+                // We allow the old space-separated form by inserting '+' between top-level tokens
+                const printTokens = tokens.slice(1, tokens.findIndex(t => t.type === "EOL"));
+                const expr        = this._parsePrintExpr(printTokens);
+                js += `${this.indent()}{ const __pv = ${expr}; console.log(woplStr(__pv)); wplenv.outputToTerminalImmediately(woplStr(__pv)); }\n`;
+                continue;
+            }
+
+            // ── EXEC cmd  (no assignment) ─────────────────────────
+            if (firstKW === "EXEC") {
+                const cmd = tokens.slice(1).filter(t => t.type !== "EOL").map(t => t.raw).join(" ");
+                js += `${this.indent()}await wplenv.execCmd(\`${cmd}\`);\n`;
+                continue;
+            }
+
+            // ── SLEEP ─────────────────────────────────────────────
+            if (firstKW === "SLEEP") {
+                const expr = this.parseExpr(tokens, 1);
+                js += `${this.indent()}await new Promise(r => setTimeout(r, ${expr}));\n`;
+                continue;
+            }
+
+            // ── BREAK / CONTINUE ─────────────────────────────────
+            if (firstKW === "BREAK")    { js += `${this.indent()}break;\n`;    continue; }
+            if (firstKW === "CONTINUE") { js += `${this.indent()}continue;\n`; continue; }
+
+            // ── SUPER ────────────────────────────────────────────
+            // SUPER(args)  — explicit super call; cancels any pending auto-super
+            if (firstKW === "SUPER") {
+                this._needsAutoSuper = false; // user is handling super explicitly
+                // Build the call: SUPER(arg1, arg2) → super(arg1, arg2)
+                if (tokens[1]?.value === "(" && tokens[1]?.type === "PUNCT") {
+                    // parse arg list
+                    const args = this._parseArgTokens(tokens, 2);
+                    js += `${this.indent()}super(${args.join(", ")});\n`;
+                } else {
+                    js += `${this.indent()}super();\n`;
+                }
+                continue;
+            }
+
+            // ── GRAPHICS ─────────────────────────────────────────
+            if (firstKW === "GINIT") {
+                const args = this._parseArgTokens(tokens, 1);
+                if (args.length >= 2) js += `${this.indent()}Modules.gfx.init(${args[0]}, ${args[1]});\n`;
+                else                  js += `${this.indent()}Modules.gfx.init(800, 600);\n`;
+                continue;
+            }
+            if (firstKW === "GCLOSE") { js += `${this.indent()}Modules.gfx.close();\n`; continue; }
+            if (firstKW === "GCLEAR") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.clear(${args[0] ?? '"#000000"'});\n`;
+                continue;
+            }
+            if (firstKW === "GPIXEL") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.drawPixel(${args[0]}, ${args[1]}, ${args[2] ?? '"#00ff00"'});\n`;
+                continue;
+            }
+            if (firstKW === "GLINE") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.drawLine(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`;
+                continue;
+            }
+            if (firstKW === "GRECT") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.drawRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`;
+                continue;
+            }
+            if (firstKW === "GFRECT") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.fillRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'});\n`;
+                continue;
+            }
+            if (firstKW === "GCIRCLE") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.drawCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'}, ${args[4] ?? 1});\n`;
+                continue;
+            }
+            if (firstKW === "GFCIRCLE") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.fillCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'});\n`;
+                continue;
+            }
+            if (firstKW === "GTEXT") {
+                const args = this._parseArgTokens(tokens, 1);
+                js += `${this.indent()}Modules.gfx.drawText(${args[0]}, ${args[1]}, woplStr(${args[2]}), woplStr(${args[3] ?? '"#00ff00"'}), ${args[4] ?? 16});\n`;
+                continue;
+            }
+
+            // ── bare function / method call ───────────────────────
+            // e.g.  MyFunc(x, y)  or  obj.method(x)
+            {
+                // reconstruct and try to parse as expression statement
+                const expr = this.parseExpr(tokens, 0);
+                // only emit if it looks like a call (contains parentheses in output)
+                if (expr && expr !== "undefined") {
+                    js += `${this.indent()}await Promise.resolve(${expr});\n`;
+                    continue;
+                }
+            }
+
+            js += `${this.indent()}// Unknown: ${line}\n`;
+        }
+
+        this.indentLevel = 0;
+        js += "})();\n";
+        return js;
+    }
+
+    // split comma-separated args (respecting parens) into expression strings
+    _parseArgTokens(tokens, startIdx) {
+        const argTokenGroups = [];
+        let cur  = [];
+        let depth = 0;
+        for (let i = startIdx; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t.type === "EOL") break;
+            if ((t.value === "(" || t.value === "[") && t.type === "PUNCT") { depth++; cur.push(t); continue; }
+            if ((t.value === ")" || t.value === "]") && t.type === "PUNCT") { depth--; cur.push(t); continue; }
+            if (t.value === "," && t.type === "PUNCT" && depth === 0) {
+                argTokenGroups.push(cur); cur = []; continue;
+            }
+            cur.push(t);
+        }
+        if (cur.length) argTokenGroups.push(cur);
+        return argTokenGroups.map(g => this.parseExpr(g));
+    }
+
+    // PRINT expression parser
+    // Strategy: try parsing the whole token sequence as one expression.
+    // If tokens remain after the first complete expression, we have space-separated
+    // fragments (old-style "text" VAR concat) — join them all with woplStr()+woplStr().
+    _parsePrintExpr(tokens) {
+        const toks = tokens.filter(t => t.type !== "EOL");
+        if (!toks.length) return '""';
+
+        // Collect all top-level expression fragments separated by whitespace.
+        // We do this by repeatedly parsing one expression and collecting the rest.
+        const fragments = [];
+        let pos = 0;
+
+        while (pos < toks.length) {
+            // build a sub-array from pos to end + EOL sentinel
+            const sub = [...toks.slice(pos), new Token("EOL","EOL")];
+            const parser = new ExprParser(sub, this);
+            let result;
+            try { result = parser.parse(); }
+            catch { result = '""'; parser.pos = sub.length; }
+            fragments.push(result);
+            pos += parser.pos; // advance by how many tokens were consumed
+            // skip any leftover EOL token in sub
+        }
+
+        if (fragments.length === 1) return fragments[0];
+        return fragments.map(f => `woplStr(${f})`).join(' + ');
+    }
+
+    // kept for internal use (APPEND etc.) — not used by PRINT anymore
+    _spaceConcat(tokens) {
+        return this._parsePrintExpr(tokens);
+    }
+}
+
 
 //let woplcompjs = new WOPLCOMPJS();
 // test code
@@ -6115,8 +7476,9 @@ class Commands{
             return ["File is not executable!", "red", ""];
         }
 
-        let wplcode = output[0].slice(1);
-        
+        //let wplcode = output[0].slice(1);
+        let wplcode = output[0].split("\n").slice(1).join("\n");
+
         // for now execute directly
         //let wplout = await Modules.wpl.run(wplcode, true);
 
@@ -6127,7 +7489,9 @@ class Commands{
 
         // run it
         try {
-            await new Function(js)(wplenv);
+            //await new Function(js)(wplenv);
+            const runFn = new Function('wplenv', 'Modules', js);
+            await runFn(wplenv, Modules);
         } catch (err) {
             console.error("Error executing WPL code:", err);
             return ["File executed with errors! Error: "+err.message, "red", ""];
@@ -6531,16 +7895,18 @@ let syntaxHighLighting = {
         "GINIT", "GCLOSE", "GCLEAR", "GPIXEL", "GLINE", "GRECT", 
         "GFRECT", "GCIRCLE", "GFCIRCLE", "GTEXT","GUSED",
         "SLEEP ", "ISDOWN ", "INDEX ",
+        "CLASS ","METHOD ","NEW ","FIELD "," EXTENDS ","SUPER","INSTANCEOF", " AND "," OR "," NOT ","TRUE","FALSE","NULL", "STRING","ARRAY","FOREACH",
         "LET","PRINT","INPUT", "FUNCTION ","PARAM","RETURN","START",
+        "RAND","FPTOI","ABS","SQRT","SIN","COS",
         "APPEND ","REMOVE ", "END","CALL","WITH","IF","ELSE","THEN",
         "EXEC","ITER"," TO ", "WHILE ", " STEP ", "BREAK", "CONTINUE",
         " INDEX ", " FROM ", " AT ", "SET ", "FIND ", " IN ", "LENGTH ",
-        "LIST", "CLEAR ", " ALL "
+        "LIST", "CLEAR ", " ALL ",
       ],
     }
 };
 
-
+/*
 function syntaxHighlight(inputDiv, extension) {
     // 1) save caret position as character offset
     const caretOffset = getCaretCharacterOffsetWithin(inputDiv);
@@ -6560,6 +7926,49 @@ function syntaxHighlight(inputDiv, extension) {
     inputDiv.innerHTML = text;
 
     // 4) restore caret
+    setCaretToPosition(inputDiv, caretOffset);
+}*/
+// old
+
+// new (comments + string support):
+function syntaxHighlight(inputDiv, extension) {
+    // 1) Save caret position
+    const caretOffset = getCaretCharacterOffsetWithin(inputDiv);
+    let text = inputDiv.innerText;
+
+    if (!syntaxHighLighting[extension]) return;
+
+    // 2) Extract & protect comments
+    const comments = [];
+    text = text.replace(/#.*$/gm, (match) => {
+        comments.push(match);
+        return `__COMMENT_${comments.length - 1}__`;
+    });
+
+    // 3) Highlight strings first (including the quotes)
+    // This matches "anything" (including escaped quotes inside)
+    text = text.replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, (match) => {
+        return `<span style="color:#4EC9B0">${match}</span>`;   // Light blue / teal for strings
+    });
+
+    // 4) Highlight keywords
+    Object.entries(syntaxHighLighting[extension]).forEach(([color, parts]) => {
+        parts.forEach(part => {
+            const esc = part.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+            const re = new RegExp(`\\b(${esc})\\b`, "g");   // Added word boundaries for safety
+            text = text.replace(re, `<span style="color:${color}">$1</span>`);
+        });
+    });
+
+    // 5) Restore comments as grey
+    text = text.replace(/__COMMENT_(\d+)__/g, (_, i) => {
+        return `<span style="color:gray">${comments[i]}</span>`;
+    });
+
+    // 6) Update div
+    inputDiv.innerHTML = text;
+
+    // 7) Restore caret position
     setCaretToPosition(inputDiv, caretOffset);
 }
 
@@ -6634,7 +8043,9 @@ function editView(filename, fileContent, newFile=false) {
     const inputDiv = document.createElement('div');
     inputDiv.classList.add('cli-input-editable');
     inputDiv.contentEditable = true;
-    inputDiv.innerText = fileContent;
+    //inputDiv.innerText = fileContent;
+    // make newlines work: // DOESNT WORK -- NEED fIXXXXXX!!
+    inputDiv.innerText = fileContent.replace(/\\n/g, "\n");
 
     editorContainer.appendChild(inputDiv);
     
@@ -6650,7 +8061,10 @@ function editView(filename, fileContent, newFile=false) {
 
         if (key === 'y') {
             event.preventDefault();
-            commands.write([filename, inputDiv.innerText]);
+            //commands.write([filename, inputDiv.innerText]);
+            // write \n instead of real newlines
+            const content = inputDiv.innerText.replace(/\n/g, "\\n");
+            commands.write([filename, content]);
 
             cleanup();
         } else if (key === 'n') {
@@ -6734,6 +8148,7 @@ function editView(filename, fileContent, newFile=false) {
     document.addEventListener('input', callSyntaxHighlight)
 
     document.addEventListener('keydown', exitEditViewCtrlXListener);
+    //document.addEventListener('keydown', editViewActionsListener);
 
     // call syntax highlight for the first time
     syntaxHighlight(inputDiv, extension);
