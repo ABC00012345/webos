@@ -43,7 +43,10 @@ text editor with mobile support + \n newline in text doesnt work for now
 some gui features
 done: export files from os, maybe create a command for it (export)
 done: call func without assigning to variable (wpl)
-- use indexed db!! and store files seperately not in oe big json array
+- done: use indexed db!! and store files seperately not in oe big json array
+- EXEC in wpl bug: executes everything after EXEC like: EXEC touch i, cant put in variable, need fix
+- BUG: filenames currently arent allowed to contain special chars,also not spaces:
+especially commands fail to work because they use args[1]  !!!!
 
 some tasks outdated / alr done check pls
 - for now the language has many features and support but many things need to be put first in variables to be used, e.g. list len, exec, ..., print, ..., this has to do with the handleExpr, maybe move all important methods there, here are some of them:
