@@ -58,6 +58,17 @@ Commands:
 - wpl: executes a file of the webos programming language
 - autoload: sets a module as autoload
 - unautoload: disables autoload for a module
+- oldwpl: use old version of wpl programming language (not compatble with new version)
+- export: export a file from WebOS and download it
+- import: import a file from your computer to WebOS
+- size: show the size of a file or directory
+
+Audio commands:
+- aload: load an audio file (supports mp3, wav, ogg)
+- aplay: play loaded audio
+- apause: pause audio
+- astats: show audio status (playing/paused, current time, duration)
+
 
 Important information:
 - autoload modules: create a file named autoload in directory /modules/<modulename>/
@@ -67,6 +78,103 @@ More coming soon!!
 
 Enjoy your experience!
 `;
+    static wplCommands = {
+        "helloworld" : `#wpl
+PRINT "Hello, World!"`,
+        "audioplayer" : `#wpl
+IMPORT wpl/audio
+
+WHILE true START
+    LET cmd = INPUT "Command (load/play/pause/seek/volume/status/exit): "
+
+    IF cmd == "load" THEN
+        LET filename = INPUT "Filename: "
+        LET res = Audio.load(filename)
+        PRINT "Loaded: " + filename
+    END
+
+    IF cmd == "play" THEN
+        Audio.play()
+        PRINT "Playing..."
+    END
+
+    IF cmd == "pause" THEN
+        Audio.pause()
+        PRINT "Paused."
+    END
+
+    IF cmd == "seek" THEN
+        LET t = INPUT "Seek to (seconds): "
+        Audio.seek(t)
+    END
+
+    IF cmd == "volume" THEN
+        LET v = INPUT "Volume (0-1): "
+        Audio.setVolume(v)
+    END
+
+    IF cmd == "status" THEN
+        PRINT "Playing: " + Audio.isPlaying()
+        PRINT "Time: " + Audio.getCurrentTime() + "/" + Audio.getDuration()
+    END
+
+    IF cmd == "exit" THEN
+        PRINT "Bye!"
+        RETURN
+    END
+END        
+`
+    }
+    static wplModules = {
+        "audio.wpl" : `#wpl
+EXEC load audio
+
+LET _woplAudioPlayer = NEW WOPLAudioPlayer()
+CLASS _AudioPlayer
+
+	METHOD INIT
+		
+	END METHOD
+
+	METHOD isPlaying
+		RETURN _woplAudioPlayer.isPlaying
+	END METHOD
+
+	METHOD load PARAM src
+		LET res = _woplAudioPlayer.load(src)
+		RETURN res
+	END METHOD
+
+	METHOD play
+		_woplAudioPlayer.play()
+	END METHOD
+
+	METHOD pause
+		_woplAudioPlayer.pause()
+	END METHOD
+
+    METHOD getCurrentTime
+        RETURN _woplAudioPlayer.getCurrentTime()
+	END METHOD
+
+    METHOD getDuration
+        RETURN _woplAudioPlayer.getDuration()
+    END METHOD
+
+    METHOD setVolume PARAM v
+        _woplAudioPlayer.setVolume(v)
+    END METHOD
+
+    METHOD seek PARAM seconds
+        _woplAudioPlayer.seek(seconds)
+    END METHOD
+
+END CLASS
+
+LET Audio = NEW _AudioPlayer()        
+`
+    }
+    // maybe move all system created files here
 }
 
 // DATE
@@ -79,8 +187,291 @@ class DateUtils {
         const date = new Date();
         return date.toLocaleTimeString();
     }
+    getUnixTimestamp() {
+        return Math.floor(Date.now() / 1000);
+    }
+    getUnixMSTimestamp() {
+        return Date.now();
+    }
 }
 
+class AudioPlayer {
+    constructor() {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+        this.currentSource = null;
+        this.currentBuffer = null;
+
+        this.isPlaying = false;
+        this.startTime = 0;
+        this.pauseOffset = 0;
+
+        this.gainNode = this.ctx.createGain();
+        this.gainNode.connect(this.ctx.destination);
+    }
+
+    async load(bytes) {
+        this.currentBuffer = await this.ctx.decodeAudioData(
+            bytes.buffer ? bytes.buffer.slice(0) : bytes
+        );
+        this.pauseOffset = 0;
+    }
+
+    play() {
+        if (!this.currentBuffer) {
+            console.warn("No audio loaded");
+            return;
+        }
+
+        if (this.isPlaying) return;
+
+        const source = this.ctx.createBufferSource();
+        source.buffer = this.currentBuffer;
+        source.connect(this.gainNode);
+
+        source.start(0, this.pauseOffset);
+
+        this.startTime = this.ctx.currentTime - this.pauseOffset;
+        this.currentSource = source;
+        this.isPlaying = true;
+
+        source.onended = () => {
+            if (this.isPlaying) {
+                this.stop();
+            }
+        };
+    }
+
+    pause() {
+        if (!this.isPlaying) return;
+
+        this.pauseOffset = this.ctx.currentTime - this.startTime;
+
+        this.currentSource.stop();
+        this.currentSource = null;
+
+        this.isPlaying = false;
+    }
+
+    stop() {
+        if (this.currentSource) {
+            this.currentSource.stop();
+            this.currentSource = null;
+        }
+
+        this.pauseOffset = 0;
+        this.isPlaying = false;
+    }
+
+    setVolume(v) {
+        this.gainNode.gain.value = v; // 0.0 → 1.0
+    }
+
+    seek(seconds) {
+        if (!this.currentBuffer) return;
+
+        this.pauseOffset = seconds;
+
+        if (this.isPlaying) {
+            this.currentSource.stop();
+            this.isPlaying = false;
+            this.play();
+        }
+    }
+
+    getCurrentTime() {
+        if (!this.isPlaying) return this.pauseOffset;
+        return this.ctx.currentTime - this.startTime;
+    }
+
+    getDuration() {
+        return this.currentBuffer ? this.currentBuffer.duration : 0;
+    }
+}
+
+// only works in console for now
+class YTPlayer {
+  static apiReadyPromise = null;
+
+  static loadAPI() {
+    if (window.YT?.Player) return Promise.resolve();
+
+    if (!YTPlayer.apiReadyPromise) {
+      YTPlayer.apiReadyPromise = new Promise((resolve) => {
+        window.onYouTubeIframeAPIReady = resolve;
+
+        if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+          const script = document.createElement("script");
+          script.src = "https://www.youtube.com/iframe_api";
+          document.head.appendChild(script);
+        }
+      });
+    }
+
+    return YTPlayer.apiReadyPromise;
+  }
+
+  constructor(containerId = "yt-player-hidden") {
+    this.player = null;
+    this.ready = false;
+    this.containerId = containerId;
+
+    this.readyPromise = new Promise((resolve) => {
+      this._resolveReady = resolve;
+    });
+
+    let el = document.getElementById(containerId);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = containerId;
+      Object.assign(el.style, {
+        position: "absolute",
+        left: "-1px",
+        top: "-1px",
+        width: "1px",
+        height: "1px",
+        opacity: "0",
+        pointerEvents: "none",
+        overflow: "hidden",
+      });
+      document.body.appendChild(el);
+    }
+
+    YTPlayer.loadAPI().then(() => {
+      this.player = new YT.Player(containerId, {
+        width: "1",
+        height: "1",
+        videoId: "",
+        playerVars: { playsinline: 1 },
+        events: {
+          onReady: () => {
+            this.ready = true;
+            this._resolveReady();
+          },
+          onError: (e) => console.error("YTPlayer error:", e.data),
+        },
+      });
+    });
+  }
+
+  getVideoId(input) {
+    if (!input) return null;
+    if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+    try {
+      const url = new URL(input);
+      return url.searchParams.get("v") ||
+        url.pathname.split("/").filter(Boolean).pop() || null;
+    } catch {
+      const match = input.match(/v=([^&]+)/) || input.match(/youtu\.be\/([^?&]+)/);
+      return match ? match[1] : null;
+    }
+  }
+
+  getPlaylistId(input) {
+    if (!input) return null;
+    try {
+        const url = new URL(input);
+        const list = url.searchParams.get("list");
+        // RDMM and RD* are mix/radio playlists — not embeddable
+        if (list && (list.startsWith("RD") || list === "RDMM")) return null;
+        return list;
+    } catch {
+        const match = input.match(/list=([^&]+)/);
+        if (!match) return null;
+        const list = match[1];
+        if (list.startsWith("RD") || list === "RDMM") return null;
+        return list;
+    }
+    }
+
+    async play(input) {
+    if (!input) throw new Error("play() requires a video ID or URL");
+    await this.readyPromise;
+
+    const videoId = this.getVideoId(input);
+    const playlistId = this.getPlaylistId(input);
+    const indexMatch = typeof input === "string" ? input.match(/[?&]index=(\d+)/) : null;
+    const index = indexMatch ? parseInt(indexMatch[1], 10) : 0;
+
+    if (playlistId && videoId) {
+        // Load video + attach playlist context so next/previous work
+        this.player.loadVideoById({
+        videoId,
+        list: playlistId,
+        listType: "playlist",
+        index,
+        });
+    } else if (playlistId) {
+        // Playlist URL without explicit video ID
+        this.player.loadPlaylist({
+        listType: "playlist",
+        list: playlistId,
+        index,
+        });
+    } else if (videoId) {
+        this.player.loadVideoById(videoId);
+    } else {
+        throw new Error("Could not extract video or playlist ID from: " + input);
+    }
+    }
+
+  async togglePlay() {
+    await this.readyPromise;
+    const state = this.player.getPlayerState();
+    if (state === YT.PlayerState.PLAYING) this.player.pauseVideo();
+    else this.player.playVideo();
+  }
+
+  async playVideo() {
+    await this.readyPromise;
+    this.player.playVideo();
+  }
+
+  async pause() {
+    await this.readyPromise;
+    this.player.pauseVideo();
+  }
+
+  async next() {
+    await this.readyPromise;
+    this.player.nextVideo();
+  }
+
+  async previous() {
+    await this.readyPromise;
+    this.player.previousVideo();
+  }
+
+  async setVolume(v) {
+    await this.readyPromise;
+    this.player.setVolume(Math.max(0, Math.min(100, v)));
+  }
+
+  async getVolume() {
+    await this.readyPromise;
+    return this.player.getVolume();
+  }
+
+  async getDuration() {
+    await this.readyPromise;
+    return this.player.getDuration();
+  }
+
+  async getCurrentTime() {
+    await this.readyPromise;
+    return this.player.getCurrentTime();
+  }
+
+  async seekTo(seconds) {
+    await this.readyPromise;
+    this.player.seekTo(seconds, true);
+  }
+
+  isPlaying() {
+    return this.ready && this.player.getPlayerState() === YT.PlayerState.PLAYING;
+  }
+}
+ 
 // RANDOM
 class RandomUtils {
     // Returns a random integer between min and max (inclusive)
@@ -2965,16 +3356,16 @@ let wplenv = {
         //res = res.replaceAll("\"","\\\"");
         return res;
     },
-    readFile: (path) => {
-        let output = OS.readFile(path);
+    readFile: async (path) => {
+        let output = await OS.readFile(path);
         if(output[1] == false){
             return null; // error // return just null for programming lang instead of output[2]
         } else {
             return output[0]; // file content
         }
     },
-    writeFile: (path, content) => {
-        let exists = OS.listfiles(path);
+    writeFile: async (path, content) => {
+        let exists = await OS.listfiles(path);
         if(exists[1] == true){
             return false;//return ["Cannot write to a directory!", "red", ""];
         }
@@ -2987,8 +3378,8 @@ let wplenv = {
             return true;//return ["File written successfully!", "green", ""];
         }
     },
-    fileExists: (path) => {
-        let output = OS.readFile(path);
+    fileExists: async (path) => {
+        let output = await OS.readFile(path);
         if (output[1]) {
             return true;
         } else {
@@ -3011,9 +3402,205 @@ let wplenv = {
         if (min > max) [min, max] = [max, min];
 
         return Math.floor(Math.random() * (max - min + 1)) + min;
+    },
+    getUnixTimestamp: () => {
+        if(!Modules.date){ return null; }
+        return Math.floor(Date.now() / 1000);
+    },
+    getUnixMSTimestamp: () => {
+        if(!Modules.date){ return null; }
+        return Modules.date.getUnixMSTimestamp();
+    },
+    getCurrentDate: () => {
+        if(!Modules.date){ return null; }
+        return Modules.date.getCurrentDate();
+    },
+    getCurrentTime: () => {
+        if(!Modules.date){ return null; }
+        return Modules.date.getCurrentTime();
+    },
+    // user input
+
+    waitForUserInput: async (prompt = "") => {
+        return new Promise((resolve) => {
+            const terminal = document.getElementById('terminal');
+            
+            // Find the last output line to append input to
+            const outputLines = terminal.querySelectorAll('.output-line');
+            const lastOutputLine = outputLines[outputLines.length - 1];
+            
+            let inputContainer;
+            
+            if (lastOutputLine && !prompt) {
+                // If there's a previous output line and no prompt, append input to it
+                inputContainer = lastOutputLine;
+                
+                // Add a space before the input
+                const space = document.createTextNode(' ');
+                inputContainer.appendChild(space);
+            } else {
+                // Create a new line for input (with prompt if provided)
+                inputContainer = document.createElement('div');
+                inputContainer.classList.add('output-line');
+                
+                if (prompt) {
+                    const promptSpan = document.createElement('span');
+                    promptSpan.textContent = prompt;
+                    promptSpan.style.color = "green"; // Match your output color
+                    inputContainer.appendChild(promptSpan);
+                }
+                
+                terminal.appendChild(inputContainer);
+            }
+            
+            // Create the input div
+            const inputDiv = document.createElement('div');
+            inputDiv.classList.add('cli-input-editable', 'wpl-input', 'inline-input');
+            inputDiv.contentEditable = true;
+            inputDiv.style.display = 'inline-block';
+            inputDiv.style.minWidth = '10px';
+            inputDiv.style.color = 'green'; // for now we'll just use green like the rest
+            //inputDiv.style.border = '1px solid #ccc'; // Visual indicator
+            //inputDiv.style.padding = '2px 4px';
+            //inputDiv.style.marginLeft = '4px';
+            
+            inputContainer.appendChild(inputDiv);
+            inputDiv.focus();
+
+            let inputText = "";
+            let isResolved = false;
+
+            const handleKeyDown = (event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    
+                    if (!isResolved) {
+                        isResolved = true;
+                        const finalInput = inputDiv.innerText.trim();
+                        
+                        // Clean up event listeners
+                        inputDiv.removeEventListener('keydown', handleKeyDown);
+                        inputDiv.removeEventListener('input', handleInput);
+                        
+                        // Make input non-editable but keep it visible
+                        inputDiv.contentEditable = false;
+                        inputDiv.style.border = 'none';
+                        inputDiv.style.backgroundColor = 'transparent';
+                        
+                        resolve(finalInput);
+                    }
+                }
+                else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    
+                    if (!isResolved) {
+                        isResolved = true;
+                        
+                        // Clean up
+                        inputDiv.removeEventListener('keydown', handleKeyDown);
+                        inputDiv.removeEventListener('input', handleInput);
+                        inputContainer.removeChild(inputDiv);
+                        
+                        resolve(""); // Empty input on escape
+                    }
+                }
+                else if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+                    this.interruptExecution = true;
+                    resolve();
+                }
+            };
+
+            const handleInput = () => {
+                // Auto-resize
+                inputDiv.style.width = 'auto';
+                inputDiv.style.width = (inputDiv.scrollWidth + 2) + 'px';
+                
+                // Store current input
+                inputText = inputDiv.innerText;
+            };
+
+            inputDiv.addEventListener('keydown', handleKeyDown);
+            inputDiv.addEventListener('input', handleInput);
+
+            // Auto-resize initially
+            setTimeout(() => {
+                inputDiv.style.width = 'auto';
+                inputDiv.style.width = (inputDiv.scrollWidth + 2) + 'px';
+            }, 0);
+        });
+    },
+
+    // audio
+    loadAudio: async (src) => {
+        if (!Modules.audio) {
+            return false;
+        }
+        let output = await OS.readFile(src, true); // read as binary
+
+        if (output[1] == false) {
+            return false; // file doesnt exist
+        }
+
+        await Modules.audio.load(output[0]);
+        if(!Modules.audio.currentBuffer){
+            return false; // failed to load audio
+        } else {
+            return true;
+        }
+    },
+
+    playAudio: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        Modules.audio.play();
+    },
+
+    pauseAudio: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        Modules.audio.pause();
+    },
+
+    isAudioPlaying: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.isPlaying;
+    },
+
+    getAudioCurrentTime: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.getCurrentTime();
+    },
+    getAudioDuration: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.getDuration();
+    },
+    setAudioVolume: (vol) => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.setVolume(Number(vol));
+    },
+    seekAudio: (time) => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.seek(Number(time));
+    },
+    stopAudio: () => {
+        if (!Modules.audio) {
+            return false;
+        }
+        return Modules.audio.stop();
     }
 }
-
 
 /* WEBOSPL COMPILER -> JS */
 /*
@@ -3995,9 +4582,26 @@ class File {
     constructor(name = "") { this._name = name.toString(); } // name is a WOPLString object!!!!
 
     get name() { return new WOPLString(this._name); } // need to also convert back to WOPLString
-    read() { return new WOPLString(wplenv.readFile(this._name)); }
-    exists() { return wplenv.fileExists(this._name); }
-    write(content) { return wplenv.writeFile(this._name, content.toString()); }
+    async read() { return new WOPLString(await wplenv.readFile(this._name)); }
+    async exists() { return await wplenv.fileExists(this._name); }
+    async write(content) { return await wplenv.writeFile(this._name, content.toString()); }
+
+}
+
+// audio player
+class WOPLAudioPlayer {
+    constructor() { }
+
+    async load(src) { return await wplenv.loadAudio(src.toString()); }
+    play() { wplenv.playAudio(); }
+    pause() { wplenv.pauseAudio(); }
+    get isPlaying() { return wplenv.isAudioPlaying(); }
+
+    getCurrentTime() { return wplenv.getAudioCurrentTime(); }
+    getDuration() { return wplenv.getAudioDuration(); }
+    setVolume(vol) { wplenv.setAudioVolume(Number(vol)); }
+    seek(time) { wplenv.seekAudio(Number(time)); }
+    stop() { wplenv.stopAudio(); }
 
 }
 
@@ -4035,7 +4639,10 @@ const KWS = new Set([
     "APPEND","REMOVE","INDEX","FROM","AT","LIST","BREAK","CONTINUE",
     "CALL","RAND","FPTOI","ABS","SQRT","SIN","COS","LENGTH","ISDOWN",
     "MOUSEPOS","GUSED","GINIT","GCLOSE","GCLEAR","GPIXEL","GLINE",
-    "GRECT","GFRECT","GCIRCLE","GFCIRCLE","GTEXT",
+    "GRECT","GFRECT","GCIRCLE","GFCIRCLE","GTEXT", 
+    
+    // date
+    "GETUNIX", "GETDATE", "GETTIME", "GETUNIXMS",
     // new keywords
     "CLASS","METHOD","NEW","FIELD","EXTENDS","SUPER","INSTANCEOF",
     "AND","OR","NOT","TRUE","FALSE","NULL",
@@ -4356,6 +4963,10 @@ class ExprParser {
             COS:   (args) => `Math.cos(${args})`,
             LENGTH:(args) => `(${args}).length`,
             ISDOWN:(args) => `wplenv.isKeyDown(${args})`,
+            GETUNIX:(args) => `wplenv.getUnixTimestamp()`,
+            GETUNIXMS:(args) => `wplenv.getUnixMSTimestamp()`,
+            GETDATE:(args) => `wplenv.getCurrentDate()`,
+            GETTIME:(args) => `wplenv.getCurrentTime()`,
             INSTANCEOF: (args) => {
                 const parts = args.split(",");
                 return `(${parts[0].trim()} instanceof ${parts[1].trim()})`;
@@ -4483,13 +5094,69 @@ class WOPLCOMPJS {
         return this.parseExpr(tokens);
     }
 
+    indentModule(code, times) {
+        const indentStr = this.indent().repeat(times); // or use this.indent() if you want
+        return code
+            .split("\n")
+            .map(line => line.trim() ? indentStr + line : line) // don't indent empty lines
+            .join("\n");
+    }
+
+
+    async compileImportedModule(modulePath) {
+        try {
+            // Read the module file using your existing environment
+            let readResult = await wplenv.readFile(modulePath + (modulePath.endsWith(".wpl") ? "" : ".wpl"));
+            
+            // check if module in default moduel dir (/wpl/*.wpl) from root
+            if (!readResult) {
+                readResult = await wplenv.readFile("/" + modulePath + (modulePath.endsWith(".wpl") ? "" : ".wpl"));
+            }
+
+            if (!readResult) {
+                wplenv.outputToTerminalImmediately(`Module not found: ${modulePath}.wpl`);
+                // throw new Error(`Module not found: ${modulePath}.wpl`);
+            }
+
+            const sourceCode = readResult.split("\n").slice(1).join("\n");;
+            console.log(sourceCode);
+
+            // Use a fresh compiler instance for the module
+            const moduleCompiler = new WOPLCOMPJS();
+            
+            // Compile the module
+            //console.log(`[IMPORT] Compiling module: ${modulePath}.wpl`);
+            let moduleJS = await moduleCompiler.compile(sourceCode, true);
+            //console.log(moduleJS.functions);
+            moduleCompiler.functions.forEach(func => this.functions.add(func)); // add imported functions to main compiler's function set
+            moduleCompiler.classes.forEach(cls => this.classes.add(cls)); // add imported classes to main compiler's class set
+            //console.log(`[IMPORT] Compiled JS for module ${modulePath}:\n${moduleJS}`);
+
+            // Add it where IMPORT <module> was
+            let wrapped = `// === Module: ${modulePath} ===\n`;
+            wrapped += `// All declarations from ${modulePath}.wpl will be attached here\n\n`;
+            wrapped += moduleJS + "\n\n";           // insert the compiled code
+
+            return wrapped;
+
+        } catch (err) {
+            console.error(`[IMPORT ERROR] ${modulePath}:`, err.message);
+            wplenv.outputToTerminalImmediately(`Failed to import module "${modulePath}": ${err.message}`, "red");
+        }
+    }
+
     // ── compile ───────────────────────────────────────────────────
-    compile(code) {
+    async compile(code, isModule=false) {
         this.reset();
 
         const lines = code.split("\n");
-        let js = "return (async () => {\n" + WOPL_RUNTIME + "\n" + WOPL_ADD_HELPER + "\n";
-        this.indentLevel = 1;
+        let js = ""
+        if(!isModule){
+            js += "return (async () => {\n" + WOPL_RUNTIME + "\n" + WOPL_ADD_HELPER + "\n";
+            // make arguments ready
+            js += "args = new WOPLArray(args)\nargc = args.length\n";
+            this.indentLevel = 1;
+        }
 
         let i = 0;
         while (i < lines.length) {
@@ -4728,6 +5395,28 @@ class WOPLCOMPJS {
                 continue;
             }
 
+            // ── LET x = INPUT "name: " (must come before plain LET) ──
+            if (firstKW === "LET" && tokens.some(t => t.value === "INPUT")) {
+                const name = tokens[1].value;
+                const inputIdx = tokens.findIndex(t => t.value === "INPUT");
+
+                let promptExpr = '""';  // default = no prompt
+
+                // If there is anything after INPUT, treat it as the prompt
+                if (inputIdx + 1 < tokens.length - 1) {
+                    const promptTokens = tokens.slice(inputIdx + 1);
+                    promptExpr = this._parsePrintExpr(promptTokens);
+                }
+
+                if (this._isDeclared(name)) {
+                    js += `${this.indent()}${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`;
+                } else {
+                    js += `${this.indent()}let ${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`;
+                    this._declare(name);
+                }
+                continue;
+            }
+
             // ── LET x = expr ─────────────────────────────────────
             if (firstKW === "LET") {
                 const name = tokens[1].value;
@@ -4897,6 +5586,26 @@ class WOPLCOMPJS {
                 continue;
             }
 
+            // ── IMPORT "module" ── // only available at current scope
+            if (firstKW === "IMPORT") {
+                let modulePath = line.trim().slice(7).trim(); // Remove "IMPORT " prefix
+                //console.log(`[IMPORT] Attempting to import module: ${modulePath}`);
+
+                // Remove quotes if present
+                if (modulePath.startsWith('"') && modulePath.endsWith('"')) {
+                    modulePath = modulePath.slice(1, -1);
+                }
+                console.log(`[IMPORT] Attempting to import module: ${modulePath}`);
+
+                const importedCode = await this.compileImportedModule(modulePath);
+                const indentedCode = this.indentModule(importedCode, this.indentLevel);
+
+                // Prepend the imported module's compiled code
+                js += "\n" + indentedCode + "\n";
+
+                continue;
+            }
+
             // ── EXEC cmd  (no assignment) ─────────────────────────
             if (firstKW === "EXEC") {
                 const cmd = tokens.slice(1).filter(t => t.type !== "EOL").map(t => t.raw).join(" ");
@@ -4995,7 +5704,9 @@ class WOPLCOMPJS {
         }
 
         this.indentLevel = 0;
-        js += "})();\n";
+        if(!isModule){
+            js += "})();\n";
+        }
         return js;
     }
 
@@ -6049,7 +6760,9 @@ class Loader {
         { name: "net", key: "net", classRef: Network },
         { name: "oldwpl", key: "oldwpl", classRef: WebOSPLang },
         { name: "wpl", key: "wpl", classRef: WOPLCOMPJS },
-        { name: "gfx", key: "gfx", classRef: Graphics }
+        { name: "gfx", key: "gfx", classRef: Graphics },
+        { name: "audio", key: "audio", classRef: AudioPlayer },
+        { name: "ytplayer", key: "ytplayer", classRef: YTPlayer },
     ];
 
     static systemModules = ["fs"];
@@ -6064,6 +6777,11 @@ class Loader {
         const mod = this.moduleList.find(m => m.name === moduleName);
         if (!mod) {
             return ["", false, `Module not found: ${moduleName}`];
+        }
+
+        // dont allow loading module twice
+        if (Modules[mod.key] != null) {
+            return ["", false, "Module already loaded!"];
         }
 
         Modules[mod.key] = new mod.classRef();
@@ -6132,586 +6850,692 @@ function utf8ToBase64(str) {
     return btoa(binary);
 }
 
-function base64ToUtf8(base64) {
+function bytesToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+
+    return btoa(binary);
+}
+
+function normalizeToBytes(input) {
+    if (input instanceof Uint8Array) return input;
+    if (input instanceof ArrayBuffer) return new Uint8Array(input);
+
+    if (typeof input === "string") {
+        // latin-1: treat each char as one byte (matches base64ToUtf8 above)
+        const bytes = new Uint8Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+            bytes[i] = input.charCodeAt(i) & 0xFF;
+        }
+        return bytes;
+    }
+
+    throw new Error("Unsupported data type");
+}
+
+/*function base64ToUtf8(base64) {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
     }
     return new TextDecoder().decode(bytes);
+}*/
+
+function base64ToUtf8(base64) {
+    // Use base64ToBytes + latin-1 string (not TextDecoder which replaces invalid UTF-8)
+    const bytes = base64ToBytes(base64);
+    let str = '';
+    for (let i = 0; i < bytes.length; i++) {
+        str += String.fromCharCode(bytes[i]); // latin-1: preserves all byte values
+    }
+    return str;
 }
 
-// CLASS FILESYSTEM
-class FS{
-    // moving protected files also to localstorage later
-    // note: protected files are only checked in remove dir and file function, maybe also checking in write functions
-    protectedFiles = [[".filesystem"], ["help.txt"], ["tools"]]; // paths are stored as arrays, so buildPath function doesn't need to be called
-    constructor(){
-        if(localStorage.getItem("fs") == null){
-            localStorage.setItem("fs", JSON.stringify({"root":{"f_.filesystem":""}}));
-        }
-        try {
-            this.filesystem = JSON.parse(localStorage.getItem("fs"));
-        } catch (e) {
-            console.error("Invalid JSON in localStorage:", e);
-            alert("Unrecoverable error: filesystem is corrupted. Press enter to reset.");
-            localStorage.setItem("fs", JSON.stringify({"root":{"f_.filesystem":""}}));
-            window.location.reload();
-            return;
-        }
-        
-        let output = this.readFile([".filesystem"]);
-        if(output[1] == false){
-            alert("Unrecoverable error: filesystem is corrupted. '.filesystem' file is missing. Press enter to recover!. Error message: "+output[2]);
-            output = this.createFile([".filesystem"], "");
-            //alert(output[2]);
-            window.location.reload();
-            return;
+function base64ToBytes(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
 
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+
+    return bytes; // ✅ raw bytes
+}
+
+
+/**
+ * FS — Inode-based filesystem backed by IndexedDB
+ *
+ * Object stores:
+ *   nodes   — inode → { type: "file"|"dir", content: Uint8Array (files only) }
+ *   dentries— { parent: inode, name: string } → childInode   (keyPath compound)
+ *   meta    — inode → { created, modified, permissions, owner, size, ... }
+ *
+ * Inode 0 is always the root directory.
+ *
+ * Public API is fully compatible with the original FS class.
+ * Callers must await fs.ready before use.
+ */
+class FS {
+    static ROOT_INODE = 0;
+
+    protectedFiles = [[".filesystem"], ["help.txt"], ["tools"]];
+
+    constructor() {
+        this._db       = null;
+        this._nextIno  = null; // loaded from meta store key "__nextIno"
+        this.ready     = this._init();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // IndexedDB bootstrap
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    _openDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open("WebOSFS", 2);
+
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+
+                // nodes: inode (number) → { type, content? }
+                if (!db.objectStoreNames.contains("nodes")) {
+                    db.createObjectStore("nodes"); // keyPath = out-of-line (inode number)
+                }
+
+                // dentries: compound key [parentInode, name] → childInode
+                if (!db.objectStoreNames.contains("dentries")) {
+                    db.createObjectStore("dentries", { keyPath: ["parent", "name"] });
+                }
+
+                // meta: inode → metadata object
+                if (!db.objectStoreNames.contains("meta")) {
+                    db.createObjectStore("meta"); // key = inode number OR "__nextIno"
+                }
+            };
+
+            req.onsuccess  = (e) => resolve(e.target.result);
+            req.onerror    = (e) => reject(e.target.error);
+        });
+    }
+
+    async _init() {
+        this._db = await this._openDB();
+
+        // Load or seed the next-inode counter
+        let stored = await this._metaGet("__nextIno");
+        if (stored == null) {
+            // Fresh DB — create root directory (inode 0)
+            await this._txn(["nodes","dentries","meta"], "readwrite", (stores) => {
+                const [nodes, , meta] = stores;
+                nodes.put({ type: "dir" }, FS.ROOT_INODE);
+                meta.put(this._makeMeta("dir", 0), FS.ROOT_INODE);
+                meta.put(1, "__nextIno"); // next free inode = 1
+            });
+            this._nextIno = 1;
+        } else {
+            this._nextIno = stored;
+        }
+
+        // Verify .filesystem sentinel
+        const check = await this.readFile([".filesystem"]);
+        if (check[1] === false) {
+            alert("Unrecoverable error: '.filesystem' missing. Recovering… " + check[2]);
+            await this.createFile([".filesystem"], "");
+            window.location.reload();
+            return;
         }
 
         this.createEssentialFiles();
-        this.moduleDirInit(); // maybe merge both calls into one init func 
-    
+        this.moduleDirInit();
+        this.wplModDIrInit();
+        this.binDirInit();
     }
-    createEssentialFiles(){
-        this.createDirectory(["tools"]);
-        this.writeFile(["help.txt"], Utils.helpMessage);
-        this.writeFile(["tools","repair.run"],"#script\necho Repairing filesystem...\nrmf /.filesystem\ntouch /.filesystem\necho Repair complete!\n");
-        this.writeFile(["tools","test.wpl"], "#wpl\n"+code);
-    }
-    moduleDirInit(){
-        // just like in linux /proc, /sys or /dev dir. represents various things in os
-        //this.removeDirectory(["modules"]);
-        // this dir is for module config
-        this.createDirectory(["modules"]);
 
-        //let files = this.listFiles(["modules"])[0];
-        //console.log(files);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Low-level DB helpers
+    // ═══════════════════════════════════════════════════════════════════════════
 
-        Loader.getAllModules().forEach((mod) => {
-            console.log("Init mod dir");
-            this.createDirectory(["modules",mod]);
-
-            // check for autoload
-            // !!!! maybe load modules later
-            let files = this.listFiles(["modules",mod])[0];
-            if(files.includes("autoload")){
-                Loader.loadModule(mod);
+    /**
+     * Run a callback inside a single IDB transaction spanning the given stores.
+     * Callback receives an array of IDBObjectStore handles in the same order.
+     * Returns a Promise that resolves with the return value of the callback
+     * (which may itself be a result value or undefined).
+     */
+    _txn(storeNames, mode, callback) {
+        return new Promise((resolve, reject) => {
+            const tx     = this._db.transaction(storeNames, mode);
+            const stores = storeNames.map(n => tx.objectStore(n));
+            let result;
+            try {
+                result = callback(stores);
+            } catch(err) {
+                tx.abort();
+                return reject(err);
             }
-            
+            tx.oncomplete = () => resolve(result);
+            tx.onerror    = (e) => reject(e.target.error);
+            tx.onabort    = (e) => reject(e.target.error);
         });
+    }
 
-        // maybe delete any user created unrelated files inside modules/
+    /** Wrap a single IDBRequest in a Promise */
+    _req(idbRequest) {
+        return new Promise((resolve, reject) => {
+            idbRequest.onsuccess = (e) => resolve(e.target.result);
+            idbRequest.onerror   = (e) => reject(e.target.error);
+        });
     }
-    getRoot(){
-        return this.filesystem["root"];
+
+    async _nodeGet(inode) {
+        const tx = this._db.transaction("nodes", "readonly");
+        return this._req(tx.objectStore("nodes").get(inode));
     }
-    // invalid paths need to be handled
-    readFile(path) {
-        let value = this.getRoot();
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            
-            // Determine if we are looking for a file (f_) or directory (d_)
-            let prefixedKey = `f_${key}`;  // Default to looking for files
-            if (i < path.length - 1) {  // If we're not at the end, we're still looking for directories or files
-                prefixedKey = `d_${key}`;  // Assume we're looking for a directory unless it's the last part
-            }
-    
-            // Check if the key exists at this level
-            if (value && value.hasOwnProperty(prefixedKey)) {
-                value = value[prefixedKey];
-                value = base64ToUtf8(value);
-                                
-                // If it's a directory (d_), and we're at the end of the path, return that it's a directory
-                if (prefixedKey.startsWith("d_")) {
-                    if (i === path.length - 1) {
-                        return ["", false, `${"/"+path.join('/')} is a directory`];
-                    }
-                    continue;  // Proceed to next part of the path if it's a directory
-                }
-    
-                // If it's a file (f_), and we're at the end of the path, return its content
-                if (prefixedKey.startsWith("f_")) {
-                    if (i === path.length - 1) {
-                        return [value, true, ""];  // Successfully found the file content
-                    }
-                    continue;  // Proceed to next part of the path if it's a file
-                }
-            } else {
-                // If the key does not exist, return an error message
-                return ["", false, `Invalid path: ${"/"+path.join('/')}`];
-            }
-        }
-    
-        return ["", false, `Invalid path: ${"/"+path.join('/')}`];  // If no match found
+
+    async _metaGet(key) {
+        const tx = this._db.transaction("meta", "readonly");
+        return this._req(tx.objectStore("meta").get(key));
     }
-    buildPath(path){
-        return path.split("/").filter(item => item);
+
+    async _dentryGet(parentInode, name) {
+        const tx = this._db.transaction("dentries", "readonly");
+        return this._req(tx.objectStore("dentries").get([parentInode, name]));
     }
-    // function for checking if path is absolute or relative
+
+    /** Allocate a new inode number (persists counter to DB) */
+    async _allocIno() {
+        const ino = this._nextIno++;
+        // persist counter async (fire-and-forget is fine; we track it in memory)
+        const tx = this._db.transaction("meta", "readwrite");
+        tx.objectStore("meta").put(this._nextIno, "__nextIno");
+        return ino;
+    }
+
+    _makeMeta(type, inode, extra = {}) {
+        const now = Date.now();
+        return {
+            inode,
+            type,
+            permissions: type === "dir" ? 0o755 : 0o644, // unix-style, future use
+            owner: "root",
+            group: "root",
+            created:  now,
+            modified: now,
+            accessed: now,
+            size: 0,
+            ...extra
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Path resolution helpers
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    buildPath(pathStr) {
+        return pathStr.split("/").filter(p => p);
+    }
+
     parsePath(path) {
-        if (path == undefined || path == null) {
-            return cwd;
-        } else if (path.startsWith("/")) {
-            // Absolute path
-            return this.buildPath(path);
-        } else {
-            // Relative path
-            const parts = path.split("/").filter(p => p.length > 0);
-            const newPath = [...cwd];
-    
-            for (const part of parts) {
-                if (part === "..") {
-                    if (newPath.length > 0) {
-                        newPath.pop(); // Go up one directory
-                    }
-                } else if (part !== ".") {
-                    newPath.push(part); // Add normal path part
-                }
-            }
-    
-            return newPath;
-        }
-    }
-    updateFS(){
-        localStorage.setItem("fs", JSON.stringify(this.filesystem));
-    }
-    createFile(path, content) {
-        let value = this.getRoot();
+        if (path == null || path === undefined) return [...cwd];
+        if (path.startsWith("/")) return this.buildPath(path);
 
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-    
-            // Determine if we are looking for a file (f_) or directory (d_)
-            let prefixedKey = `f_${key}`;  // Default to looking for files
-            if (i < path.length - 1) {  // If we're not at the end, we're still looking for directories or files
-                prefixedKey = `d_${key}`;  // Assume we're looking for a directory unless it's the last part
-            }
-    
-            // Check if the key exists at this level
-            if (value && value.hasOwnProperty(prefixedKey)) {
-                value = value[prefixedKey];
-                
-                // If it's a directory, continue to the next part of the path
-                if (prefixedKey.startsWith("d_")) {
-                    if (i === path.length - 1) {
-                        // If the path ends in a directory, return that it's a directory
-                        return ["", false, `${"/"+path.join('/')} is a directory, cannot create file here`];
-                    }
-                    continue;  // Proceed to next part of the path if it's a directory
-                }
-    
-                // If it's a file, we're trying to create a file where one already exists
-                if (prefixedKey.startsWith("f_")) {
-                    if (i === path.length - 1) {
-                        // The file already exists
-                        return ["", false, `File ${"/"+path.join('/')} already exists`];
-                    }
-                    continue;  // Proceed to next part of the path if it's a file
-                }
-            } else {
-                // If the key does not exist, create the directory or file at this level
-                if (prefixedKey.startsWith("d_")) {
-                    // If it's a directory, create it as a new object
-                    value[prefixedKey] = {};
-                    value = value[prefixedKey];
-                    //this.updateFS();
-                } else if (prefixedKey.startsWith("f_") && i === path.length - 1) {
-                    // If it's the last element in the path, create the file with content
-                    value[prefixedKey] = content;  // Create the file with content
-                    this.updateFS();
-                    return [content, true, ""];  // Successfully created the file // why returning content?? AI ?!?
-                } else {
-                    return ["", false, `Invalid path: ${"/"+path.join('/')}`];
-                }
-            }
+        const parts  = path.split("/").filter(p => p.length > 0);
+        const result = [...cwd];
+        for (const part of parts) {
+            if (part === "..") { if (result.length > 0) result.pop(); }
+            else if (part !== ".") result.push(part);
         }
-    
-        return ["", false, `Invalid path: ${"/"+path.join('/')}`];  // If we get here, it's invalid
+        return result;
+    }
 
-    }
-    createDirectory(path) {
-        let value = this.getRoot();
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let prefixedKey = `d_${key}`;  // Always creating or checking directories
-    
-            if (value.hasOwnProperty(prefixedKey)) {
-                // If it exists and is a directory, continue
-                if (typeof value[prefixedKey] === 'object') {
-                    value = value[prefixedKey];
-                    continue;
-                } else {
-                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
-                }
-            } else {
-                // Create directory
-                value[prefixedKey] = {};
-                value = value[prefixedKey];
-            }
-        }
-    
-        this.updateFS();
-        return ["",true, ""];  // Successfully created directory
-    }
-    deleteFile(path, force) {
-        let value = this.getRoot();
+    /**
+     * Walk a path array from root.
+     * Returns { inode, parentInode, name, type } or null if not found.
+     * If mustBeDir is true, returns null if the final component is a file.
+     */
+    async _resolvePath(pathArr) {
+        let inode = FS.ROOT_INODE;
         let parent = null;
-        let lastKey = null;
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let prefixedKey = i < path.length - 1 ? `d_${key}` : `f_${key}`;  // Use 'd_' for intermediate, 'f_' for final file
-    
-            if (value && value.hasOwnProperty(prefixedKey)) {
-                parent = value;         // Store the parent for deletion
-                lastKey = prefixedKey; // Store the key to delete
-                value = value[prefixedKey];
-    
-                if (i < path.length - 1 && !prefixedKey.startsWith("d_")) {
-                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
-                }
-            } else {
-                return ["",false, `Path ${"/"+path.join('/')} does not exist`];
-            }
-        }
-        
-        // protected check
-        const isProtected = this.protectedFiles.some(inner => JSON.stringify(inner) === JSON.stringify(path));
 
-        console.log("Deleting file: ", path);
-        console.log("Is protected: ", isProtected);
-        console.log("Force delete: ", force);
-        // Final check: is this a file?
-        if (lastKey && lastKey.startsWith("f_")) /* only delete protected files if force is set */ {
-            if(force || !isProtected){
-                delete parent[lastKey];
-                this.updateFS();
-                return ["",true, ""];
-            } else {
-                return ["",false, `File ${"/"+path.join('/')} is protected and cannot be deleted.`];
-            }
+        for (let i = 0; i < pathArr.length; i++) {
+            const name  = pathArr[i];
+            const entry = await this._dentryGet(inode, name);
+            if (entry == null) return null;
+
+            parent = inode;
+            inode  = entry.inode;
         }
-    
-        return ["",false, `${"/"+path.join('/')} is a directory, not a file`];
+
+        const node = await this._nodeGet(inode);
+        if (!node) return null;
+        return { inode, parentInode: parent, name: pathArr[pathArr.length - 1] ?? "", type: node.type };
     }
-    deleteDirectory(path, force) {
-        let value = this.getRoot();
-        let parent = null;
-        let lastKey = null;
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let prefixedKey = `d_${key}`;  // Always expect directories for rmdir
-    
-            if (value && value.hasOwnProperty(prefixedKey)) {
-                parent = value;
-                lastKey = prefixedKey;
-                value = value[prefixedKey];
-    
-                if (typeof value !== 'object') {
-                    return ["",false, `${"/"+path.slice(0, i + 1).join('/')} is not a directory`];
-                }
-            } else {
-                return ["",false, `Directory ${"/"+path.join('/')} does not exist`];
-            }
+
+    /**
+     * Walk to the *parent* directory of a path.
+     * Returns { parentInode, name } or null.
+     */
+    async _resolveParent(pathArr) {
+        if (pathArr.length === 0) return null;
+        const parentPath = pathArr.slice(0, -1);
+        const name       = pathArr[pathArr.length - 1];
+
+        let inode = FS.ROOT_INODE;
+        for (const seg of parentPath) {
+            const entry = await this._dentryGet(inode, seg);
+            if (!entry) return null;
+            inode = entry.inode;
         }
-    
-        // Final check: is it empty?
-        /*if (Object.keys(value).length > 0) {
-            return ["",false, `Directory ${path.join('/')} is not empty`];
-        }*/ // function currently deletes even if not empty, maybe add a check for this later
-        
-        const isProtected = this.protectedFiles.some(inner => JSON.stringify(inner) === JSON.stringify(path));
-        if(force || !isProtected){
-            // Safe to delete
-            delete parent[lastKey];
-            this.updateFS();
-            return ["",true, ""];
-        } else {
-            return ["",false, `Directory ${path.join('/')} is protected and cannot be deleted.`];
-        }
+        return { parentInode: inode, name };
     }
-    listFiles(path) {
-        let value = this.getRoot();
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let dirKey = `d_${key}`;
-    
-            if (value.hasOwnProperty(dirKey)) {
-                value = value[dirKey];
-            } else {
-                return [[], false, `Invalid path: ${"/"+path.join('/')}`];
-            }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Public API  (all original methods, now async, same return shape)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    async createFile(path, content) {
+        const loc = await this._resolveParent(path);
+        if (!loc) return ["", false, `Invalid path: /${path.join("/")}`];
+
+        const { parentInode, name } = loc;
+
+        // Check parent is a directory
+        const parentNode = await this._nodeGet(parentInode);
+        if (!parentNode || parentNode.type !== "dir") {
+            return ["", false, `/${path.slice(0,-1).join("/")} is not a directory`];
         }
-    
-        if (typeof value !== 'object' || value === null) {
-            return [[], false, `${path.join('/')} is not a directory`];
+
+        // Check not already exists
+        const existing = await this._dentryGet(parentInode, name);
+        if (existing != null) {
+            const ex = await this._nodeGet(existing.inode);
+            if (ex.type === "dir") return ["", false, `/${path.join("/")} is a directory, cannot create file here`];
+            return ["", false, `File /${path.join("/")} already exists`];
         }
-    
-        let entries = Object.keys(value).map(entry => {
-            if (entry.startsWith("d_")) return entry.slice(2) + '/'; // Add slash for directory
-            if (entry.startsWith("f_")) return entry.slice(2);
-            return entry;
+
+        const bytes  = normalizeToBytes(content);
+        const inode  = await this._allocIno();
+
+        await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+            nodes.put({ type: "file", content: bytes }, inode);
+            dentries.put({ parent: parentInode, name, inode });
+            meta.put(this._makeMeta("file", inode, { size: bytes.byteLength }), inode);
         });
-    
+
+        return [content, true, ""];
+    }
+
+    async createDirectory(path) {
+        // Walk and create each segment if missing (mkdir -p style, matching original)
+        let inode = FS.ROOT_INODE;
+
+        for (const name of path) {
+            const entry = await this._dentryGet(inode, name);
+            if (entry != null) {
+                const node = await this._nodeGet(entry.inode);
+                if (node.type !== "dir") return ["", false, `/${name} is not a directory`];
+                inode = entry.inode;
+                continue;
+            }
+
+            const newIno = await this._allocIno();
+            const parentIno = inode;
+            await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+                nodes.put({ type: "dir" }, newIno);
+                dentries.put({ parent: parentIno, name, inode: newIno });
+                meta.put(this._makeMeta("dir", newIno), newIno);
+            });
+            inode = newIno;
+        }
+
+        return ["", true, ""];
+    }
+
+    async deleteFile(path, force) {
+        const isProtected = this.protectedFiles.some(p => JSON.stringify(p) === JSON.stringify(path));
+        if (isProtected && !force) return ["", false, `File /${path.join("/")} is protected and cannot be deleted.`];
+
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `Path /${path.join("/")} does not exist`];
+        if (resolved.type === "dir") return ["", false, `/${path.join("/")} is a directory, not a file`];
+
+        const { inode, parentInode, name } = resolved;
+        await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+            nodes.delete(inode);
+            dentries.delete([parentInode, name]);
+            meta.delete(inode);
+        });
+        return ["", true, ""];
+    }
+
+    async deleteDirectory(path, force) {
+        const isProtected = this.protectedFiles.some(p => JSON.stringify(p) === JSON.stringify(path));
+        if (isProtected && !force) return ["", false, `Directory /${path.join("/")} is protected and cannot be deleted.`];
+
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `Directory /${path.join("/")} does not exist`];
+        if (resolved.type !== "dir") return ["", false, `/${path.join("/")} is not a directory`];
+
+        // Recursively collect all descendant inodes + dentry keys
+        const inodesToDel  = [];
+        const dentryKeys   = [];
+
+        const collect = async (dirInode) => {
+            inodesToDel.push(dirInode);
+            const children = await this._listDentries(dirInode);
+            for (const child of children) {
+                dentryKeys.push([dirInode, child.name]);
+                if (child.type === "dir") await collect(child.inode);
+                else inodesToDel.push(child.inode);
+            }
+        };
+
+        await collect(resolved.inode);
+        // Also remove the dentry pointing to this dir from its parent
+        if (resolved.parentInode !== null) {
+            dentryKeys.push([resolved.parentInode, resolved.name]);
+        }
+
+        await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+            for (const ino of inodesToDel) { nodes.delete(ino); meta.delete(ino); }
+            for (const key of dentryKeys)  { dentries.delete(key); }
+        });
+
+        return ["", true, ""];
+    }
+
+    /** Internal: list dentries under a directory inode */
+    async _listDentries(dirInode) {
+        return new Promise((resolve, reject) => {
+            const tx      = this._db.transaction(["dentries","nodes"], "readonly");
+            const dStore  = tx.objectStore("dentries");
+            const nStore  = tx.objectStore("nodes");
+            const results = [];
+
+            // IDB key range: all entries where parent === dirInode
+            const range = IDBKeyRange.bound([dirInode, ""], [dirInode, "\uFFFF"]);
+            const req   = dStore.openCursor(range);
+
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) { resolve(results); return; }
+
+                const { name, inode } = cursor.value;
+                const nodeReq = nStore.get(inode);
+                nodeReq.onsuccess = (ne) => {
+                    const node = ne.target.result;
+                    if (node) results.push({ name, inode, type: node.type });
+                    cursor.continue();
+                };
+                nodeReq.onerror = (e) => reject(e.target.error);
+            };
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async listFiles(path) {
+        let inode = FS.ROOT_INODE;
+        for (const name of path) {
+            const entry = await this._dentryGet(inode, name);
+            if (!entry) return [[], false, `Invalid path: /${path.join("/")}`];
+            const node = await this._nodeGet(entry.inode);
+            if (!node || node.type !== "dir") return [[], false, `/${path.join("/")} is not a directory`];
+            inode = entry.inode;
+        }
+
+        const children = await this._listDentries(inode);
+        const entries  = children.map(c => c.type === "dir" ? c.name + "/" : c.name);
         return [entries, true, ""];
     }
-    readFile(path) {
-        let value = this.getRoot();
-    
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let dirKey = `d_${key}`;
-            let fileKey = `f_${key}`;
-    
-            // If it's the last part of the path
-            if (i === path.length - 1) {
-                if (value.hasOwnProperty(fileKey)) {
-                    let data = base64ToUtf8(value[fileKey]);
-                    return [data, true, ""];
-                } else if (value.hasOwnProperty(dirKey)) {
-                    return ["", false, `${"/"+path.join('/')} is a directory, not a file`];
-                } else {
-                    return ["", false, `File ${"/"+path.join('/')} does not exist`];
-                }
-            }
-    
-            // For intermediate segments, expect only directories
-            if (value.hasOwnProperty(dirKey)) {
-                value = value[dirKey];
-            } else {
-                return ["", false, `Invalid path: ${path.join('/')}`];
-            }
-        }
-    
-        return ["", false, `File ${"/"+path.join('/')} does not exist`]; // fallback
-    }
-    // similar to createFile, maybe merge them or remove support for adding content to files in createFile
-    writeFile(path, content) {
-        let value = this.getRoot();
-        
-        // encode content: better for storing as json
-        /// FOR NOW IN BASE64, later we'll add custom encoding for less overhead
-        content = utf8ToBase64(content);
 
-        for (let i = 0; i < path.length; i++) {
-            let key = path[i];
-            let dirKey = `d_${key}`;
-            let fileKey = `f_${key}`;
-    
-            // If it's the last part of the path (the file name)
-            if (i === path.length - 1) {
-                if (value.hasOwnProperty(dirKey)) {
-                    return ["",false, `${"/"+path.join('/')} is a directory, not a file`];
-                }
-    
-                // Write or create the file
-                value[fileKey] = content;
-                this.updateFS();
-                return [true, ""];
-            }
-    
-            // Intermediate path segments must be directories
-            if (value.hasOwnProperty(dirKey)) {
-                value = value[dirKey];
-            } else {
-                return ["",false, `Invalid path: ${"/"+path.slice(0, i + 1).join('/')}`];
-            }
-        }
-    
-        return ["",false, `Unexpected error writing to ${"/"+path.join('/')}`]; // fallback
+    async readFile(path, raw = false) {
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `File /${path.join("/")} does not exist`];
+        if (resolved.type === "dir") return ["", false, `/${path.join("/")} is a directory, not a file`];
+
+        const node = await this._nodeGet(resolved.inode);
+
+        // Update accessed timestamp (fire-and-forget)
+        this._metaTouch(resolved.inode, { accessed: Date.now() });
+
+        if (raw) return [node.content instanceof Uint8Array ? node.content : new Uint8Array(node.content), true, ""];
+        return [base64ToUtf8(bytesToBase64(new Uint8Array(node.content))), true, ""];
     }
-    movePath(srcPath, destPath) {
-        let root = this.getRoot();
-    
-        // Handle the case where destination is the root (empty array)
-        if (destPath.length === 0) {
-            destPath = [];  // Destination is the root
+
+    async writeFile(path, content) {
+        const loc = await this._resolveParent(path);
+        if (!loc) return ["", false, `Invalid path: /${path.join("/")}`];
+
+        const { parentInode, name } = loc;
+
+        // Check for collision with a directory
+        const existing = await this._dentryGet(parentInode, name);
+        if (existing) {
+            const node = await this._nodeGet(existing.inode);
+            if (node.type === "dir") return ["", false, `/${path.join("/")} is a directory, not a file`];
+            // Overwrite existing file
+            const bytes = normalizeToBytes(content);
+            const now   = Date.now();
+            await this._txn(["nodes","meta"], "readwrite", ([nodes, meta]) => {
+                nodes.put({ type: "file", content: bytes }, existing.inode);
+                meta.put({ ...this._makeMeta("file", existing.inode), modified: now, accessed: now, size: bytes.byteLength }, existing.inode);
+            });
+            return [true, ""];
         }
 
-        if (JSON.stringify(srcPath) === JSON.stringify(destPath)) {
-            return ["", false, "Source and destination paths are the same!"];
+        // Create new file (same as createFile without the exists check)
+        const parentNode = await this._nodeGet(parentInode);
+        if (!parentNode || parentNode.type !== "dir") {
+            return ["", false, `/${path.slice(0,-1).join("/")} is not a directory`];
         }
-    
-        // Navigate to source parent
-        let srcParent = root;
-        for (let i = 0; i < srcPath.length - 1; i++) {
-            let dirKey = `d_${srcPath[i]}`;
-            if (srcParent.hasOwnProperty(dirKey)) {
-                srcParent = srcParent[dirKey];
-            } else {
-                return ["",false, `Invalid source path: /${srcPath.slice(0, i + 1).join('/')}`];
-            }
-        }
-    
-        let srcName = srcPath[srcPath.length - 1];
-        let srcFileKey = `f_${srcName}`;
-        let srcDirKey = `d_${srcName}`;
-    
-        let isFile = srcParent.hasOwnProperty(srcFileKey);
-        let isDir = srcParent.hasOwnProperty(srcDirKey);
-    
-        if (!isFile && !isDir) {
-            return ["",false, `Source not found: /${srcPath.join('/')}`];
-        }
-    
-        // Navigate to destination parent
-        let destParent = root;
-        if (destPath.length > 0) {  // If it's not the root directory
-            for (let i = 0; i < destPath.length - 1; i++) {
-                let dirKey = `d_${destPath[i]}`;
-                if (destParent.hasOwnProperty(dirKey)) {
-                    destParent = destParent[dirKey];
-                } else {
-                    return ["",false, `Invalid destination path: /${destPath.slice(0, i + 1).join('/')}`];
-                }
-            }
-        }
-    
-        let destName = destPath[destPath.length - 1];
-        let destDirKey = `d_${destName}`;
-        let destFileKey = `f_${destName}`;
-    
-        // Case: destination is an existing directory → move inside it
-        if (destParent.hasOwnProperty(destDirKey)) {
-            let destDir = destParent[destDirKey];
-            let targetKey = isFile ? `f_${srcName}` : `d_${srcName}`;
-            if (destDir.hasOwnProperty(targetKey)) {
-                return ["",false, `Destination already contains /${srcName}`];
-            }
-            destDir[targetKey] = isFile ? srcParent[srcFileKey] : srcParent[srcDirKey];
-            if (isFile) delete srcParent[srcFileKey];
-            else delete srcParent[srcDirKey];
-            this.updateFS();
-            return ["",true, "File moved successfully!"];
-        }
-    
-        // Case: destination is the root directory (destPath is empty)
-        if (destPath.length === 0) {
-            if (isFile) {
-                root[`f_${srcName}`] = srcParent[srcFileKey];
-                delete srcParent[srcFileKey];
-            } else {
-                root[`d_${srcName}`] = srcParent[srcDirKey];
-                delete srcParent[srcDirKey];
-            }
-            this.updateFS();
-            return ["",true, "File moved successfully to root!"];
-        }
-    
-        // Case: destination is new file or directory name (rename)
-        if (isFile) {
-            destParent[`f_${destName}`] = srcParent[srcFileKey];
-            delete srcParent[srcFileKey];
-        } else {
-            destParent[`d_${destName}`] = srcParent[srcDirKey];
-            delete srcParent[srcDirKey];
-        }
-    
-        this.updateFS();
-        return ["",true, "File moved successfully!"];
+
+        const bytes = normalizeToBytes(content);
+        const inode = await this._allocIno();
+        await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+            nodes.put({ type: "file", content: bytes }, inode);
+            dentries.put({ parent: parentInode, name, inode });
+            meta.put(this._makeMeta("file", inode, { size: bytes.byteLength }), inode);
+        });
+        return [true, ""];
     }
-    copyPath(srcPath, destPath) {
-        let root = this.getRoot();
-    
-        // Handle the case where destination is the root (empty array)
-        if (destPath.length === 0) {
-            destPath = [];  // Destination is the root
-        }
-    
-        if (JSON.stringify(srcPath) === JSON.stringify(destPath)) {
+
+    async movePath(srcPath, destPath) {
+        if (JSON.stringify(srcPath) === JSON.stringify(destPath))
             return ["", false, "Source and destination paths are the same!"];
-        }
-    
-        // Navigate to source parent
-        let srcParent = root;
-        for (let i = 0; i < srcPath.length - 1; i++) {
-            let dirKey = `d_${srcPath[i]}`;
-            if (srcParent.hasOwnProperty(dirKey)) {
-                srcParent = srcParent[dirKey];
-            } else {
-                return ["", false, `Invalid source path: /${srcPath.slice(0, i + 1).join('/')}`];
-            }
-        }
-    
-        let srcName = srcPath[srcPath.length - 1];
-        let srcFileKey = `f_${srcName}`;
-        let srcDirKey = `d_${srcName}`;
-    
-        let isFile = srcParent.hasOwnProperty(srcFileKey);
-        let isDir = srcParent.hasOwnProperty(srcDirKey);
-    
-        if (!isFile && !isDir) {
-            return ["", false, `Source not found: /${srcPath.join('/')}`];
-        }
-    
-        // Navigate to destination parent
-        let destParent = root;
-        if (destPath.length > 0) {  // If it's not the root directory
-            for (let i = 0; i < destPath.length - 1; i++) {
-                let dirKey = `d_${destPath[i]}`;
-                if (destParent.hasOwnProperty(dirKey)) {
-                    destParent = destParent[dirKey];
-                } else {
-                    return ["", false, `Invalid destination path: /${destPath.slice(0, i + 1).join('/')}`];
-                }
-            }
-        }
-    
-        let destName = destPath[destPath.length - 1];
-        let destDirKey = `d_${destName}`;
-        let destFileKey = `f_${destName}`;
-    
-        // Case: destination is an existing directory → copy inside it
-        if (destParent.hasOwnProperty(destDirKey)) {
-            let destDir = destParent[destDirKey];
-            let targetKey = isFile ? `f_${srcName}` : `d_${srcName}`;
-            if (destDir.hasOwnProperty(targetKey)) {
-                return ["", false, `Destination already contains /${srcName}`];
-            }
-    
-            // Copy file or directory
-            if (isFile) {
-                // For files, copy the content directly (not as an object)
-                destDir[targetKey] = srcParent[srcFileKey];
-            } else {
-                // For directories, do a deep copy
-                destDir[targetKey] = JSON.parse(JSON.stringify(srcParent[srcDirKey]));
-            }
-            this.updateFS();
-            return ["", true, "File copied successfully!"];
-        }
-    
-        // Case: destination is the root directory (destPath is empty)
-        if (destPath.length === 0) {
-            if (isFile) {
-                root[`f_${srcName}`] = srcParent[srcFileKey]; // Copy the file content directly
-            } else {
-                root[`d_${srcName}`] = JSON.parse(JSON.stringify(srcParent[srcDirKey])); // Deep copy directory
-            }
-            this.updateFS();
-            return ["", true, "File copied successfully to root!"];
-        }
-    
-        // Case: destination is new file or directory name (rename)
-        if (isFile) {
-            destParent[`f_${destName}`] = srcParent[srcFileKey]; // Copy file content directly
+
+        const src = await this._resolvePath(srcPath);
+        if (!src) return ["", false, `Source not found: /${srcPath.join("/")}`];
+
+        // Resolve destination
+        let destParentIno, destName;
+        const destExisting = await this._resolvePath(destPath);
+
+        if (destExisting && destExisting.type === "dir") {
+            // Move inside that directory, keep original name
+            destParentIno = destExisting.inode;
+            destName      = src.name;
+            const clash = await this._dentryGet(destParentIno, destName);
+            if (clash) return ["", false, `Destination already contains /${destName}`];
         } else {
-            destParent[`d_${destName}`] = JSON.parse(JSON.stringify(srcParent[srcDirKey])); // Deep copy directory
+            // Rename / move to new name
+            const loc = await this._resolveParent(destPath);
+            if (!loc) return ["", false, `Invalid destination path: /${destPath.join("/")}`];
+            destParentIno = loc.parentInode;
+            destName      = loc.name;
         }
-    
-        this.updateFS();
+
+        // Atomic: remove old dentry, add new dentry
+        await this._txn(["dentries","meta"], "readwrite", ([dentries, meta]) => {
+            dentries.delete([src.parentInode, src.name]);
+            dentries.put({ parent: destParentIno, name: destName, inode: src.inode });
+            // touch modified on the moved node
+            // (metadata read not available inside txn callback easily, so we schedule separately)
+        });
+        this._metaTouch(src.inode, { modified: Date.now() });
+
+        return ["", true, "File moved successfully!"];
+    }
+
+    async copyPath(srcPath, destPath) {
+        if (JSON.stringify(srcPath) === JSON.stringify(destPath))
+            return ["", false, "Source and destination paths are the same!"];
+
+        const src = await this._resolvePath(srcPath);
+        if (!src) return ["", false, `Source not found: /${srcPath.join("/")}`];
+
+        let destParentIno, destName;
+        const destExisting = await this._resolvePath(destPath);
+
+        if (destExisting && destExisting.type === "dir") {
+            destParentIno = destExisting.inode;
+            destName      = src.name;
+            const clash = await this._dentryGet(destParentIno, destName);
+            if (clash) return ["", false, `Destination already contains /${destName}`];
+        } else {
+            const loc = await this._resolveParent(destPath);
+            if (!loc) return ["", false, `Invalid destination path: /${destPath.join("/")}`];
+            destParentIno = loc.parentInode;
+            destName      = loc.name;
+        }
+
+        if (src.type === "file") {
+            const node  = await this._nodeGet(src.inode);
+            const bytes = new Uint8Array(node.content); // copy bytes
+            const inode = await this._allocIno();
+            await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+                nodes.put({ type: "file", content: bytes }, inode);
+                dentries.put({ parent: destParentIno, name: destName, inode });
+                meta.put(this._makeMeta("file", inode, { size: bytes.byteLength }), inode);
+            });
+        } else {
+            // Recursive directory copy
+            await this._copyDirRecursive(src.inode, destParentIno, destName);
+        }
+
         return ["", true, "File copied successfully!"];
     }
-    
-    
-    
+
+    async _copyDirRecursive(srcIno, destParentIno, destName) {
+        const newIno = await this._allocIno();
+        await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+            nodes.put({ type: "dir" }, newIno);
+            dentries.put({ parent: destParentIno, name: destName, inode: newIno });
+            meta.put(this._makeMeta("dir", newIno), newIno);
+        });
+
+        const children = await this._listDentries(srcIno);
+        for (const child of children) {
+            if (child.type === "dir") {
+                await this._copyDirRecursive(child.inode, newIno, child.name);
+            } else {
+                const node  = await this._nodeGet(child.inode);
+                const bytes = new Uint8Array(node.content);
+                const inode = await this._allocIno();
+                await this._txn(["nodes","dentries","meta"], "readwrite", ([nodes, dentries, meta]) => {
+                    nodes.put({ type: "file", content: bytes }, inode);
+                    dentries.put({ parent: newIno, name: child.name, inode });
+                    meta.put(this._makeMeta("file", inode, { size: bytes.byteLength }), inode);
+                });
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Metadata helpers
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Update specific meta fields without reading first (fire-and-forget) */
+    async _metaTouch(inode, fields) {
+        const tx   = this._db.transaction("meta", "readwrite");
+        const store = tx.objectStore("meta");
+        const req   = store.get(inode);
+        req.onsuccess = (e) => {
+            const existing = e.target.result;
+            if (existing) store.put({ ...existing, ...fields }, inode);
+        };
+    }
+
+    /**
+     * Public: read metadata for a given path.
+     * Returns [metaObject, true, ""] or ["", false, errorMsg]
+     */
+    async stat(path) {
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `/${path.join("/")} does not exist`];
+        const m = await this._metaGet(resolved.inode);
+        return [m, true, ""];
+    }
+
+    /**
+     * Public: set permissions for a given path (unix octal, e.g. 0o644).
+     * Returns ["", true, ""] or ["", false, errorMsg]
+     */
+    async chmod(path, permissions) {
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `/${path.join("/")} does not exist`];
+        await this._metaTouch(resolved.inode, { permissions });
+        return ["", true, ""];
+    }
+
+    /**
+     * Public: set owner/group for a given path.
+     */
+    async chown(path, owner, group) {
+        const resolved = await this._resolvePath(path);
+        if (!resolved) return ["", false, `/${path.join("/")} does not exist`];
+        await this._metaTouch(resolved.inode, { owner, group });
+        return ["", true, ""];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OS init helpers (unchanged logic, just awaited)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    async createEssentialFiles() {
+        await this.createDirectory(["tools"]);
+        await this.writeFile(["help.txt"], Utils.helpMessage);
+        await this.writeFile(["tools","repair.run"],
+            "#script\necho Repairing filesystem...\nrmf /.filesystem\ntouch /.filesystem\necho Repair complete!\n");
+        await this.writeFile(["tools","test.wpl"], "#wpl\n" + code);
+    }
+
+    async wplModDIrInit() {
+        await this.createDirectory(["wpl"]);
+        await this.writeFile(["wpl","gfx.wpl"],  "#wpl\nEXEC load gfx\n");
+        await this.writeFile(["wpl","date.wpl"], "#wpl\nEXEC load date\n");
+        for (const mod in Utils.wplModules) {
+            await this.writeFile(["wpl", mod], Utils.wplModules[mod]);
+        }
+    }
+
+    async binDirInit() {
+        await this.createDirectory(["bin"]);
+        for (const cmd in Utils.wplCommands) {
+            await this.writeFile(["bin", cmd], Utils.wplCommands[cmd]);
+        }
+    }
+
+    async moduleDirInit() {
+        await this.createDirectory(["modules"]);
+        for (const mod of Loader.getAllModules()) {
+            await this.createDirectory(["modules", mod]);
+            const [files] = await this.listFiles(["modules", mod]);
+            if (files.includes("autoload")) Loader.loadModule(mod);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Legacy shim: getRoot() — kept for any internal code that used it directly.
+    // Returns a live proxy that throws a clear error to catch stale callers.
+    // ═══════════════════════════════════════════════════════════════════════════
+    getRoot() {
+        throw new Error("FS.getRoot() is no longer supported. Use the async FS methods directly.");
+    }
 }
 
 
@@ -6721,7 +7545,7 @@ class OsCalls{
     // fixed:
     // :/ ls command can only be used to list in directories but not on files, maybe this will be changed in the future. but this also requires changing the cd function then if listFiles changes to also list files, because cd function depends on it, maybe function related callsbacks as 4th argument for return value?
     // file operation os calls are used to parse the full path which is then passed to the FS class which reads/writes content from/to the file with abs path
-    listfiles(path){
+    async listfiles(path){
         console.log("Listing files in path: ", path);
 
         if(!this.probeFSModule()){
@@ -6730,7 +7554,7 @@ class OsCalls{
         }
         
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.listFiles(parsed_path);
+        let output = await filesystem.listFiles(parsed_path);
         let entries = output[0];
         if(output[1] == false){
             return ["", false, output[2]];
@@ -6750,7 +7574,7 @@ class OsCalls{
             window.location.reload();
         },10000)
     }
-    createFile(path, content){
+    async createFile(path, content){
         console.log("Creating file");
 
         if(!this.probeFSModule()){
@@ -6759,14 +7583,14 @@ class OsCalls{
         }
         
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.createFile(parsed_path, content); // need to be modified to list current dir if cwd and cd is implemented
+        let output = await filesystem.createFile(parsed_path, content); // need to be modified to list current dir if cwd and cd is implemented
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
     }
-    deleteFile(path, force){
+    async deleteFile(path, force){
         console.log("Deleting file");
 
         if(!this.probeFSModule()){
@@ -6775,14 +7599,14 @@ class OsCalls{
         }
         
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.deleteFile(parsed_path, force); // need to be modified to list current dir if cwd and cd is implemented
+        let output = await filesystem.deleteFile(parsed_path, force); // need to be modified to list current dir if cwd and cd is implemented
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
     }
-    createDir(path){
+    async createDir(path){
         console.log("Creating directory");
 
         if(!this.probeFSModule()){
@@ -6791,14 +7615,14 @@ class OsCalls{
         }
 
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.createDirectory(parsed_path);
+        let output = await filesystem.createDirectory(parsed_path);
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
     }
-    deleteDir(path, force){
+    async deleteDir(path, force){
         console.log("Deleting directory");
 
         if(!this.probeFSModule()){
@@ -6807,14 +7631,14 @@ class OsCalls{
         }
 
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.deleteDirectory(parsed_path, force);
+        let output = await filesystem.deleteDirectory(parsed_path, force);
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
     }
-    readFile(path){
+    async readFile(path, raw=false){
         console.log("Reading file");
 
         if(!this.probeFSModule()){
@@ -6823,7 +7647,7 @@ class OsCalls{
         }
 
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.readFile(parsed_path);
+        let output = await filesystem.readFile(parsed_path, raw);
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
@@ -6831,7 +7655,7 @@ class OsCalls{
         }
     }
     // similar to createFile, maybe merge them or remove support for adding content to files in createFile
-    writeFile(path, content){
+    async writeFile(path, content){
         console.log("Writing file");
 
         if(!this.probeFSModule()){
@@ -6840,7 +7664,7 @@ class OsCalls{
         }
 
         let parsed_path = filesystem.parsePath(path);
-        let output = filesystem.writeFile(parsed_path, content.replace(/\\n/g, "\n"));
+        let output = await filesystem.writeFile(parsed_path, content/*.replace(/\\n/g, "\n")*/);
         if(output[1] == false){
             return ["", false, output[2]];
         } else {
@@ -6851,7 +7675,7 @@ class OsCalls{
         let parsed_path = filesystem.parsePath(path);
         return parsed_path;
     }
-    movePath(srcPath, destPath) {
+    async movePath(srcPath, destPath) {
 
         if(!this.probeFSModule()){
             this.panic10();
@@ -6862,14 +7686,14 @@ class OsCalls{
         let parsed_destPath = filesystem.parsePath(destPath);
         console.log('Source Path:', parsed_srcPath);
         console.log('Destination Path:', parsed_destPath);
-        let output = filesystem.movePath(parsed_srcPath, parsed_destPath);
+        let output = await filesystem.movePath(parsed_srcPath, parsed_destPath);
         if (output[1] == false) {
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
     }
-    copyPath(srcPath, destPath) {
+    async copyPath(srcPath, destPath) {
 
         if(!this.probeFSModule()){
             this.panic10();
@@ -6880,16 +7704,34 @@ class OsCalls{
         let parsed_destPath = filesystem.parsePath(destPath);
         console.log('Source Path:', parsed_srcPath);
         console.log('Destination Path:', parsed_destPath);
-        let output = filesystem.copyPath(parsed_srcPath, parsed_destPath);
+        let output = await filesystem.copyPath(parsed_srcPath, parsed_destPath);
         if (output[1] == false) {
             return ["", false, output[2]];
         } else {
             return [output[0], true, ""];
         }
+    }
+
+    async getSize(src) {
+
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_src = filesystem.parsePath(src);
+        
+        let output = await filesystem.stat(parsed_src);
+        if (output[1] == false) {
+            return ["", false, output[2]];
+        } else {
+            return [output[0].size, true, ""];
+        }
+
     }
 
     // ntb implemented: add autoload command (+ e.g.:unautoload)
-    autoLoadMod(modname){
+    async autoLoadMod(modname){
         console.log("Autoload module");
 
         if(!this.probeFSModule()){
@@ -6902,7 +7744,7 @@ class OsCalls{
         }
         
         let parsedPath = filesystem.parsePath("/modules/"+modname+"/autoload");
-        let output = filesystem.createFile(parsedPath, "");
+        let output = await filesystem.createFile(parsedPath, "");
         // fails if file already exists so just ignore error
 
         //if(output[1] == false){
@@ -6912,7 +7754,7 @@ class OsCalls{
         //}
     }
 
-    unAutoLoadMod(modname){
+    async unAutoLoadMod(modname){
         console.log("Autoload module");
 
         if(!this.probeFSModule()){
@@ -6925,7 +7767,7 @@ class OsCalls{
         }
         
         let parsedPath = filesystem.parsePath("/modules/"+modname+"/autoload");
-        let output = filesystem.deleteFile(parsedPath, true);
+        let output = await filesystem.deleteFile(parsedPath, true);
 
         return ["Autoload disabled for module: "+modname, true, ""];
     }
@@ -6936,8 +7778,8 @@ class OsCalls{
 let cancelFunction = undefined;
 
 class Commands{
-    ls(args){
-        let output = OS.listfiles(args[0]); // first arg is path
+    async ls(args){
+        let output = await OS.listfiles(args[0]); // first arg is path
         if(output[1] == false){
             return [output[2], "red", ""];
         } else {
@@ -6946,7 +7788,7 @@ class Commands{
 
     }
 
-    cd(args){
+    async cd(args){
 
         if(!OS.probeFSModule()){
             OS.panic10();
@@ -6955,7 +7797,7 @@ class Commands{
 
         // normally filesystem class function should only be called from OsCalls class (Kernel)
         let parsed_path = OS.parsePathWrapper(args[0]);
-        let output = filesystem.listFiles(parsed_path);
+        let output = await filesystem.listFiles(parsed_path);
         if(output[1] == false){
             return ["Directory does't exist!", "red", ""];
         }
@@ -6968,23 +7810,23 @@ class Commands{
         // if changing directory to root, then cwdPath is empty, so return /
         return ["Current directory => "+cwdPath, "green", ""];
     }
-    touch(args){
-        let output = OS.createFile(args[0],"");
+    async touch(args){
+        let output = await OS.createFile(args[0],"");
         if(output[1] == false){
             return [output[2], "red", ""];
         } else {
             return ["File created successfully!", "green", ""];
         }
     }
-    rm(args, force=false){
+    async rm(args, force=false){
         if (args.length === 0) {
             return ["Usage: rm <files>", "yellow", ""];
         }
 
         let outputMessage = '';  // Initialize an empty string to store messages
 
-        args.forEach(file => {
-            const result = OS.deleteFile(file,force);
+        args.forEach(async file => {
+            const result = await OS.deleteFile(file,force);
             
             if (result[1] === false) {
                 outputMessage += `Error deleting ${file}: ${result[2]}\n`;  // Append error message
@@ -7002,33 +7844,33 @@ class Commands{
         // If all deletions were successful, return the success message
         return [outputMessage, "green", ""];
     }
-    rmf(args){
+    async rmf(args){
         if(args.length === 0){
             return ["Usage: rmf <files>", "yellow", ""];
         }
-        return this.rm(args, true);
+        return await this.rm(args, true);
     }
     pwd(args){
         // cwdPath should be used here, because it is the current path
         return ["Current directory => "+cwdPath, "green", ""];
     }
-    mkdir(args){
-        let output = OS.createDir(args[0]);
+    async mkdir(args){
+        let output = await OS.createDir(args[0]);
         if(output[1] == false){
             return [output[2], "red", ""];
         } else {
             return ["Directory created successfully!", "green", ""];
         }
     }
-    rmdir(args, force=false) {
+    async rmdir(args, force=false) {
         if (args.length === 0) {
             return ["Usage: rmdir <dirs>", "yellow", ""];
         }
     
         let outputMessage = '';  // Initialize an empty string to store messages
     
-        args.forEach(dir => {
-            const result = OS.deleteDir(dir, force);
+        args.forEach(async dir => {
+            const result = await OS.deleteDir(dir, force);
             
             if (result[1] === false) {
                 outputMessage += `Error deleting directory ${dir}: ${result[2]}\n`;  // Append error message
@@ -7046,22 +7888,22 @@ class Commands{
         // If all deletions were successful, return the success message
         return [outputMessage, "green", ""];
     }
-    rmdirf(args){
+    async rmdirf(args){
         if(args.length === 0){
             return ["Usage: rmdirf <dirs>", "yellow", ""];
         }
-        return this.rmdir(args, true);
+        return await this.rmdir(args, true);
     }
-    cat(args){
+    async cat(args){
         // this should read the file and return the content
-        let output = OS.readFile(args[0]);
+        let output = await OS.readFile(args[0]);
         if(output[1] == false){
             return [output[2], "red", ""];
         } else {
             return [output[0], "green", ""];
         }
     }
-    write(args){
+    async write(args){
         // this should write the file and return the content
         if (!args[0] || args.length < 2) {
             return ["Usage: write <filename> <content>", "yellow", ""];
@@ -7071,12 +7913,12 @@ class Commands{
         let content = args.slice(1).join(" "); // combine all other args as content
         //console.log("Writing to file: ", filename, " with content: ", content);
 
-        let exists = OS.listfiles(args[0]);
+        let exists = await OS.listfiles(args[0]);
         if(exists[1] == true){
             return ["Cannot write to a directory!", "red", ""];
         }
         
-        let output = OS.writeFile(filename, content);
+        let output = await OS.writeFile(filename, content);
         
         if (output[0] === false) {
             return [output[1], "red", ""];
@@ -7092,7 +7934,7 @@ class Commands{
         return [args.join(" "), "green", ""];
 
     }
-    mv(args){
+    async mv(args){
         // this should move the file and return the content
         if (args.length < 2) {
             return ["Usage: mv <source> <destination>", "yellow", ""];
@@ -7101,7 +7943,7 @@ class Commands{
         let src = args[0];
         let dest = args[1];
         
-        let output = OS.movePath(src, dest);
+        let output = await OS.movePath(src, dest);
         
         if (output[1] == false) {
             return [output[2], "red", ""];
@@ -7109,7 +7951,7 @@ class Commands{
             return ["File moved successfully!", "green", ""];
         }
     }
-    cp(args){
+    async cp(args){
         // this should copy the file and return the content
         if (args.length < 2) {
             return ["Usage: cp <source> <destination>", "yellow", ""];
@@ -7118,7 +7960,7 @@ class Commands{
         let src = args[0];
         let dest = args[1];
         
-        let output = OS.copyPath(src, dest);
+        let output = await OS.copyPath(src, dest);
         
         if (output[1] == false) {
             return [output[2], "red", ""];
@@ -7126,26 +7968,26 @@ class Commands{
             return ["File copied successfully!", "green", ""];
         }
     }
-    exist(args) {
+    async exist(args) {
         if (!args[0]) {
             return ["Usage: exist <path>", "yellow", ""];
         }
     
         // Check if it's a file
-        let output = OS.readFile(args[0]);
+        let output = await OS.readFile(args[0]);
         if (output[1]) {
             return ["true", "green", ""];
         }
     
         // Check if it's a directory
-        output = OS.listfiles(args[0]);
+        output = await OS.listfiles(args[0]);
         if (output[1]) {
             return ["true", "green", ""];
         }
     
         return ["false", "green", ""];
     }
-    append(args){
+    async append(args){
         // this should write the file and return the content
         if (!args[0] || args.length < 2) {
             return ["Usage: append <filename> <content>", "yellow", ""];
@@ -7155,14 +7997,14 @@ class Commands{
         let content = args.slice(1).join(" "); // combine all other args as content
         //console.log("Writing to file: ", filename, " with content: ", content);
 
-        let exists = OS.readFile(args[0]);
+        let exists = await OS.readFile(args[0]);
         if(exists[1] == false){
             return [exists[2], "red", ""];
         }
 
-        let curContent = OS.readFile(filename);
+        let curContent = await OS.readFile(filename);
         
-        let output = OS.writeFile(filename, curContent[0]+content);
+        let output = await OS.writeFile(filename, curContent[0]+content);
         
         if (output[0] === false) {
             return [output[1], "red", ""];
@@ -7176,7 +8018,7 @@ class Commands{
             return ["Usage: run <filename>", "yellow", ""];
         }
         let filename = args[0];
-        let output = OS.readFile(filename);
+        let output = await OS.readFile(filename);
 
         if (output[1] == false) {
             return [output[2], "red", ""];
@@ -7325,16 +8167,16 @@ class Commands{
         }, timeout*1000);
         return ["Exiting in "+timeout+" seconds ...", "green", ""];
     }
-    edit(args){
+    async edit(args){
         // this should open the file in edit mode
         if (!args[0]) {
             return ["Usage: edit <filename>", "yellow", ""];
         }
         let filename = args[0];
         let parsed_filename = filesystem.parsePath(filename)
-        let output = OS.readFile(filename);
+        let output = await OS.readFile(filename);
         // check if direcory, if it is, this returns true, so dont continue, if target doesnt exist at all, thenn readFile fails
-        let entries = filesystem.listFiles(parsed_filename);
+        let entries = await filesystem.listFiles(parsed_filename);
 
         // open the file in edit mode
         if(entries[1]){ // is a dir
@@ -7431,7 +8273,7 @@ class Commands{
             return ["Usage: wpl <filename>", "yellow", ""];
         }
         let filename = args[0];
-        let output = OS.readFile(filename);
+        let output = await OS.readFile(filename);
 
         if (output[1] == false) {
             return [output[2], "red", ""];
@@ -7465,7 +8307,7 @@ class Commands{
             return ["Usage: wpl <filename>", "yellow", ""];
         }
         let filename = args[0];
-        let output = OS.readFile(filename);
+        let output = await OS.readFile(filename);
 
         if (output[1] == false) {
             return [output[2], "red", ""];
@@ -7484,14 +8326,14 @@ class Commands{
 
 
         //let woplcompjs = new WOPLCOMPJS();
-        const js = Modules.wpl.compile(wplcode);
+        const js = await Modules.wpl.compile(wplcode);
         console.log(js);
 
         // run it
         try {
             //await new Function(js)(wplenv);
-            const runFn = new Function('wplenv', 'Modules', js);
-            await runFn(wplenv, Modules);
+            const runFn = new Function('wplenv', 'Modules', 'args', js);
+            await runFn(wplenv, Modules, args); /* args is later converted to WOPLArray */
         } catch (err) {
             console.error("Error executing WPL code:", err);
             return ["File executed with errors! Error: "+err.message, "red", ""];
@@ -7508,13 +8350,13 @@ class Commands{
         }*/
     }
 
-    autoload(args){
+    async autoload(args){
         // mdoule loader
         if (!args[0]) {
             return ["Usage: autoload <module>", "yellow", ""];
         }
 
-        let output = OS.autoLoadMod(args[0]);
+        let output = await OS.autoLoadMod(args[0]);
         console.log(output);
         if(output[1] == false){
             return [output[2], "red", ""];
@@ -7522,23 +8364,193 @@ class Commands{
             return [output[0], "green", ""];
         }
     }
-    unautoload(args){
+    async unautoload(args){
         // mdoule loader
         if (!args[0]) {
             return ["Usage: unautoload <module>", "yellow", ""];
         }
 
-        let output = OS.unAutoLoadMod(args[0]);
+        let output = await OS.unAutoLoadMod(args[0]);
         if(output[1] == false){
             return [output[2], "red", ""];
         } else {
             return [output[0], "green", ""];
         }
     }
+    /*export(args){
+
+        if (!args[0]) {
+            return ["Usage: export <filename>", "yellow", ""];
+        }
+
+        let output = OS.readFile(args[0]);
+        if(output[1] == false){
+            return [output[2], "red", ""];
+        }
+
+        const blob = new Blob([output[0]], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = args[0];
+        a.click();
+
+        URL.revokeObjectURL(url);
+    }*/
+    async export(args) {
+        if (!args[0]) {
+            return ["Usage: export <filename>", "yellow", ""];
+        }
+
+        // ✅ get RAW bytes
+        let output = await OS.readFile(args[0], true);
+
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        }
+
+        const bytes = output[0]; // Uint8Array
+
+        // ✅ detect file type (optional but nice)
+        let mimeType = "application/octet-stream";
+
+        const name = args[0].toLowerCase();
+        if (name.endsWith(".mp3")) mimeType = "audio/mpeg";
+        if (name.endsWith(".wav")) mimeType = "audio/wav";
+        if (name.endsWith(".png")) mimeType = "image/png";
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) mimeType = "image/jpeg";
+        if (name.endsWith(".txt")) mimeType = "text/plain";
+
+        // ✅ create blob from raw bytes
+        const blob = new Blob([bytes], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = args[0];
+        a.click();
+
+        URL.revokeObjectURL(url);
+    }
+    async import(args) {
+        try {
+            let file;
+
+            if (window.showOpenFilePicker) {
+                const [fileHandle] = await window.showOpenFilePicker();
+                file = await fileHandle.getFile();
+            } else {
+                file = await new Promise((resolve) => {
+                    const input = document.createElement("input");
+                    input.type = "file";
+                    input.onchange = (e) => resolve(e.target.files[0]);
+                    input.click();
+                });
+            }
+
+            if (!file) return ["No file selected", "red", ""];
+
+            // Always read as binary — never use .text() for imported files
+            const content = await file.arrayBuffer();
+
+            let res = await OS.createFile(file.name, content);
+            if (res[1] == false) return [res[2], "red", ""];
+
+            return ["File successfully imported: " + file.name, "green", ""];
+
+        } catch (err) {
+            return ["Error importing file: " + err.message, "red", ""];
+        }
+    }
+    async aload(args) {
+        if (!Modules.audio) {
+            return ["audio module not loaded (need: audio)", "red", ""];
+        }
+        if (!args[0]) {
+            return ["Usage: aload <filename>", "yellow", ""];
+        }
+        let filename = args[0];
+        let output = await OS.readFile(filename, true); // read as binary
+
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        }
+
+        await Modules.audio.load(output[0]);
+        if(!Modules.audio.currentBuffer){
+            return ["Failed to load audio!", "red", ""];
+        } else {
+            return ["Audio loaded successfully!", "green", ""];
+        }
+        //let a = new AudioPlayer()
+        //a.load()
+
+    }
+
+    async aplay(args) {
+        if (!Modules.audio) {
+            return ["audio module not loaded (need: audio)", "red", ""];
+        }
+
+        if(!Modules.audio.currentBuffer){
+           return ["No audio loaded!", "red", ""];
+        }
+
+        Modules.audio.play();
+        //let a = new AudioPlayer()
+        //a.load()
+
+    }
+
+    async apause(args) {
+        if (!Modules.audio) {
+            return ["audio module not loaded (need: audio)", "red", ""];
+        }
+
+        
+        if(!Modules.audio.currentBuffer){
+           return ["No audio loaded!", "red", ""];
+        }
+
+        Modules.audio.pause();
+    }
+
+    async astats(args) {
+        if (!Modules.audio) {
+            return ["audio module not loaded (need: audio)", "red", ""];
+        }
+
+        if(!Modules.audio.currentBuffer){
+           return ["No audio loaded!", "red", ""];
+        }
+
+        let currentTime = Modules.audio.getCurrentTime();
+        let duration = Modules.audio.getDuration();
+        let isPlaying = Modules.audio.isPlaying;
+
+        return [`Current Time: ${currentTime.toFixed(2)}s\nDuration: ${duration.toFixed(2)}s\nPlaying: ${isPlaying}`, "green", ""]
+
+    }
+
     // ...
+
+    async size(args) {
+        if (!args[0]) {
+            return ["Usage: size <path>", "yellow", ""];
+        }
+        let output = await OS.getSize(args[0]);
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            return [`Size of ${args[0]}: ${output[0]} bytes`, "green", ""];
+        }
+
+    }
 }
 
 let filesystem = new FS();
+await filesystem.ready;
 let OS = new OsCalls();
 let commands = new Commands();
 // date/random,.. other modules are initalized by load command
@@ -7584,7 +8596,16 @@ class CommandManager {
             oldwpl: commands.oldwpl,
             wpl: commands.wpl,
             autoload: commands.autoload,
-            unautoload: commands.unautoload
+            unautoload: commands.unautoload,
+            export: commands.export,
+            import: commands.import,
+            size: commands.size,
+
+            // audio
+            aload: commands.aload,
+            aplay: commands.aplay,
+            apause: commands.apause,
+            astats: commands.astats,
         };
         this.asyncCommands = ["ping"]
     }
@@ -7611,6 +8632,14 @@ class CommandManager {
             let res = await this.availableCommands[command](args);
             return res;
         } else {
+
+            // if command is a wpl command in /bin/*.wpl
+            if(command in Utils.wplCommands || (await OS.listfiles("/bin"))[0].includes(command) && command != ""){
+                // exec command
+                let res = this.availableCommands["wpl"]( ["/bin/"+command, ...args] );
+                return res;
+            }
+
             if(command!=""){
                 return [this.commandNotFound(command), "red",""];
             }
@@ -7653,7 +8682,7 @@ function createInputLine() {
     inputDiv.focus();
 
     // auto completition stuff
-    let curCmdAutoCompletIndex = 0;
+    let curCmdAutoCompleteIndex = 0;
     let cmdMatch;
     let curCmdInput = "";
 
@@ -7789,9 +8818,13 @@ function createInputLine() {
                     // command completion
                     cmdMatch = Object.keys(commandManager.availableCommands)
                         .filter(key => key.startsWith(curCmdInput));
+                    
+                    // wpl commands
+                    cmdMatch = cmdMatch.concat(Object.keys(Utils.wplCommands)
+                        .filter(key => key.startsWith(curCmdInput)));
                 } else {
                     // file/folder completion
-                    const [entries, ok] = filesystem.listFiles(cwd);
+                    const [entries, ok] = await filesystem.listFiles(cwd);
                     if (ok) {
                         cmdMatch = entries
                             .filter(name => name.startsWith(curCmdInput));
@@ -7932,6 +8965,13 @@ function syntaxHighlight(inputDiv, extension) {
 
 // new (comments + string support):
 function syntaxHighlight(inputDiv, extension) {
+
+
+    // needed for files in /bin to work
+    if(inputDiv.innerText.startsWith("#wpl")) {
+        extension = "wpl";
+    }
+
     // 1) Save caret position
     const caretOffset = getCaretCharacterOffsetWithin(inputDiv);
     let text = inputDiv.innerText;
@@ -8043,9 +9083,10 @@ function editView(filename, fileContent, newFile=false) {
     const inputDiv = document.createElement('div');
     inputDiv.classList.add('cli-input-editable');
     inputDiv.contentEditable = true;
-    //inputDiv.innerText = fileContent;
+    inputDiv.innerText = fileContent;
     // make newlines work: // DOESNT WORK -- NEED fIXXXXXX!!
-    inputDiv.innerText = fileContent.replace(/\\n/g, "\n");
+    //inputDiv.innerText = fileContent.replace(/\\n/g, "\n");
+    /// fixed !!!! not needed code above!!!
 
     editorContainer.appendChild(inputDiv);
     
@@ -8055,7 +9096,7 @@ function editView(filename, fileContent, newFile=false) {
     let savePromptShown = false;
     let modified = false;
 
-    function savePromptListener(event) {
+    async function savePromptListener(event) {
         const key = event.key.toLowerCase();
         if (!savePromptShown) return;
 
@@ -8063,8 +9104,8 @@ function editView(filename, fileContent, newFile=false) {
             event.preventDefault();
             //commands.write([filename, inputDiv.innerText]);
             // write \n instead of real newlines
-            const content = inputDiv.innerText.replace(/\n/g, "\\n");
-            commands.write([filename, content]);
+            const content = inputDiv.innerText // not needed, dont use :   //.replace(/\n/g, "\\n");
+            await commands.write([filename, content]);
 
             cleanup();
         } else if (key === 'n') {
