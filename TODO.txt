@@ -47,6 +47,8 @@ done: call func without assigning to variable (wpl)
 - EXEC in wpl bug: executes everything after EXEC like: EXEC touch i, cant put in variable, need fix
 - BUG: filenames currently arent allowed to contain special chars,also not spaces:
 especially commands fail to work because they use args[1]  !!!!
+- encoding issue, ♪ interpreted as latin-1 gets âª
+- BUG: wpl graphics libraryy G* doesnt work if editor opened then called
 
 some tasks outdated / alr done check pls
 - for now the language has many features and support but many things need to be put first in variables to be used, e.g. list len, exec, ..., print, ..., this has to do with the handleExpr, maybe move all important methods there, here are some of them:
