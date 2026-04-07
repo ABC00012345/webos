@@ -1,0 +1,481 @@
+#wpl
+IMPORT wpl/audio
+IMPORT wpl/fs
+IMPORT wpl/gfx
+
+# ── Config ────────────────────────────────────────────────────
+LET SCAN_DIRS = LIST "/"
+LET AUDIO_EXTS = LIST ".mp3" ".m4a" ".wav" ".ogg" ".flac"
+# ── State ─────────────────────────────────────────────────────
+LET tracks     = LIST
+LET trackIndex = 0
+LET playing    = false
+LET seekDrag   = false
+
+# ── Screen setup ─────────────────────────────────────────────
+GCLOSE
+GINIT 780, 420
+GCLEAR "#0d0d0d"
+
+# ── Helper: draw the full UI ──────────────────────────────────
+FUNCTION drawUI PARAM title, currentSec, totalSec, isPlaying, idx, total, volume START
+
+    # Background
+    GCLEAR "#0d0d0d"
+
+    # Title bar
+    GFRECT 0, 0, 780, 54, "#1a1a2e"
+    GTEXT  20, 34, "WebOS Audio Player", "#7c83fd", 22
+
+    # Track counter (top-right)
+    LET trackCountStr = STRING(idx + 1) + " / " + STRING(total)
+    GTEXT 660, 34, trackCountStr, "#555577", 18
+
+    # Song title
+    GFRECT 0, 60, 780, 60, "#12122a"
+    GTEXT  20, 100, title, "#e0e0ff", 20
+
+    # ── Progress bar ─────────────────────────────────────────
+    LET BAR_X = 20
+    LET BAR_Y = 140
+    LET BAR_W = 740
+    LET BAR_H = 10
+
+    # vol bar
+    LET VBAR_X = 640
+    LET VBAR_Y = 215
+    LET VBAR_W = 100
+    LET VBAR_H = 10
+
+    # Track background
+    GFRECT BAR_X, BAR_Y, BAR_W, BAR_H, "#2a2a3e"
+
+    # vol bar
+    GFRECT VBAR_X,VBAR_Y, VBAR_W, VBAR_H, "#2a2a3e"
+
+    # Filled portion
+    LET filled = 0
+    LET Vfilled = VBAR_W*volume
+    IF totalSec > 0 THEN
+        LET filled = FPTOI((currentSec / totalSec) * BAR_W)
+    END
+    IF filled > BAR_W THEN
+        LET filled = BAR_W
+    END
+    IF filled > 0 THEN
+        GFRECT BAR_X, BAR_Y, filled, BAR_H, "#7c83fd"
+    END
+
+    # Scrubber knob
+    LET knobX = BAR_X + filled
+    GFCIRCLE knobX, BAR_Y + 5, 8, "#a0a8ff"
+
+    # vol knob
+    LET VknobX = VBAR_X + Vfilled
+    GFCIRCLE VknobX, VBAR_Y + 5, 8, "#a0a8ff"
+
+    # Time labels
+    LET curMin  = FPTOI(currentSec / 60)
+    LET curSec2 = FPTOI(currentSec - curMin * 60)
+    LET totMin  = FPTOI(totalSec / 60)
+    LET totSec2 = FPTOI(totalSec - totMin * 60)
+
+    LET curSecStr = STRING(curSec2)
+    IF curSec2 < 10 THEN
+        LET curSecStr = "0" + curSecStr
+    END
+    LET totSecStr = STRING(totSec2)
+    IF totSec2 < 10 THEN
+        LET totSecStr = "0" + totSecStr
+    END
+
+    LET timeLeft  = STRING(curMin) + ":" + curSecStr
+    LET timeRight = STRING(totMin) + ":" + totSecStr
+
+    GTEXT BAR_X, 172, timeLeft,  "#8888aa", 15
+    GTEXT 700,   172, timeRight, "#8888aa", 15
+
+    # ── Buttons ───────────────────────────────────────────────
+    #  |<<   <<   PLAY/PAUSE   >>   >>|
+    #   x=180  270   360        450  540   (centre=390)
+
+    # Previous
+    GFRECT 175, 200, 70, 42, "#1e1e3a"
+    GRECT  175, 200, 70, 42, "#4444aa", 1
+    GTEXT  188, 228, "|<<", "#c0c8ff", 18
+
+    # Seek-back 10s
+    GFRECT 260, 200, 70, 42, "#1e1e3a"
+    GRECT  260, 200, 70, 42, "#4444aa", 1
+    GTEXT  277, 228, "-10", "#c0c8ff", 18
+
+    # Play / Pause
+    LET playLabel = "PLAY"
+    IF isPlaying THEN
+        LET playLabel = "PAUSE"
+    END
+    GFRECT 345, 196, 90, 50, "#3a3aaa"
+    GRECT  345, 196, 90, 50, "#7c83fd", 2
+    GTEXT  358, 228, playLabel, "#ffffff", 20
+
+    # Seek-forward 10s
+    GFRECT 450, 200, 70, 42, "#1e1e3a"
+    GRECT  450, 200, 70, 42, "#4444aa", 1
+    GTEXT  467, 228, "+10", "#c0c8ff", 18
+
+    # Next
+    GFRECT 535, 200, 70, 42, "#1e1e3a"
+    GRECT  535, 200, 70, 42, "#4444aa", 1
+    GTEXT  548, 228, ">>|", "#c0c8ff", 18
+
+    # ── Playlist panel ────────────────────────────────────────
+    GFRECT 0, 268, 780, 2, "#2a2a4a"
+
+    GTEXT 20, 290, "Playlist", "#7c83fd", 16
+
+    RETURN 0
+END
+
+# ── Helper: draw one playlist row ────────────────────────────
+FUNCTION drawTrackRow PARAM rowIdx, name, isCurrent START
+    LET rowY = 315 + rowIdx * 26
+    IF isCurrent THEN
+        GFRECT 16, rowY - 18, 748, 24, "#2a2a5a"
+        GTEXT  32, rowY, name, "#a0a8ff", 14
+    ELSE
+        GTEXT  32, rowY, name, "#666688", 14
+    END
+    RETURN 0
+END
+
+# ── Recursive FS scanner 
+FUNCTION scanDir PARAM dirPath START
+    LET entries = FS.listFiles(dirPath)
+    LET n       = entries.length
+
+    ITER 0 TO n - 1 WITH i
+        LET entry = entries.get(i)
+        LET name  = STRING(entry)
+
+        # Directory → recurse
+        IF name.endsWith("/") THEN
+            LET subName = name.substring(0, name.length - 1)
+            LET subPath = dirPath + subName + "/"
+            CALL scanDir WITH subPath
+        ELSE
+            # Check extension
+            LET ext4 = name.substring(name.length - 4)
+            LET ext5 = name.substring(name.length - 5)
+            LET isAudio = false
+
+            IF ext4.lower().equals(".mp3") THEN
+                LET isAudio = true
+            END
+            IF ext4.lower().equals(".wav") THEN
+                LET isAudio = true
+            END
+            IF ext4.lower().equals(".ogg") THEN
+                LET isAudio = true
+            END
+            IF ext5.lower().equals(".flac") THEN
+                LET isAudio = true
+            END
+            IF ext4.lower().equals(".m4a") THEN
+                LET isAudio = true
+            END
+
+            IF isAudio THEN
+                LET fullPath = dirPath + name
+                APPEND fullPath TO tracks
+            END
+        END
+    END
+    RETURN 0
+END
+
+# ── Load and play a track by index ───────────────────────────
+FUNCTION loadTrack PARAM idx START
+    LET n = tracks.length
+    IF n == 0 THEN
+        RETURN false
+    END
+    IF idx < 0 THEN
+        LET idx = n - 1
+    END
+    IF idx >= n THEN
+        LET idx = 0
+    END
+    LET trackIndex = idx
+
+    LET path = STRING(tracks.get(idx))
+
+    LET ok = Audio.load(path)
+    IF ok THEN
+        Audio.play()
+        LET playing = true
+    ELSE
+        PRINT "Failed to load: " + path
+        LET playing = false
+    END
+    RETURN ok
+END
+
+# ── Button hit-test helpers ───────────────────────────────────
+FUNCTION inRect PARAM mx, my, rx, ry, rw, rh START
+    LET hit = false
+    IF mx >= rx THEN
+        IF mx <= rx + rw THEN
+            IF my >= ry THEN
+                IF my <= ry + rh THEN
+                    LET hit = true
+                END
+            END
+        END
+    END
+    RETURN hit
+END
+
+FUNCTION barFraction PARAM mx START
+    LET BAR_X = 20
+    LET BAR_W = 740
+    LET frac  = (mx - BAR_X) / BAR_W
+    IF frac < 0 THEN
+        LET frac = 0
+    END
+    IF frac > 1 THEN
+        LET frac = 1
+    END
+    RETURN frac
+END
+
+FUNCTION VbarFraction PARAM mx START
+    LET VBAR_X = 640
+    LET VBAR_W = 100
+    LET frac  = (mx - VBAR_X) / VBAR_W
+    IF frac < 0 THEN
+        LET frac = 0
+    END
+    IF frac > 1 THEN
+        LET frac = 1
+    END
+    RETURN frac
+END
+
+# ── Scan ─────────────────────────────────────────────────────
+GCLEAR "#0d0d0d"
+GTEXT 20, 60, "Scanning filesystem for audio files...", "#7c83fd", 18
+
+CALL scanDir WITH "/"
+
+LET trackCount = tracks.length
+
+IF trackCount == 0 THEN
+    GTEXT 20, 100, "No audio files found. Import an .mp3 or .wav first.", "#ff6666", 16
+
+    LET doneWait = false
+    WHILE doneWait == false START
+        LET pos = MOUSEPOS()
+        IF ISDOWN("Escape") THEN
+            LET doneWait = true
+        END
+        SLEEP 100
+    END
+
+    GCLOSE
+    RETURN
+END
+
+# Load first track
+CALL loadTrack WITH 0
+
+# ── Main loop ─────────────────────────────────────────────────
+LET lastMouse  = false
+LET running    = true
+LET frameMs    = 80
+LET visibleRows = 4
+LET volume = 1
+
+WHILE running START
+
+    LET cur   = Audio.getCurrentTime()
+    LET total = Audio.getDuration()
+    LET isNowPlaying = Audio.isPlaying()
+
+    # strip path → just filename for display
+    LET fullPath  = STRING(tracks.get(trackIndex))
+    LET slashIdx  = 0
+    LET pathLen   = fullPath.length
+    LET nameStart = 0
+
+    ITER 0 TO pathLen - 1 WITH ci
+        LET ch = fullPath.charAt(ci)
+        IF ch.equals("/") THEN
+            LET nameStart = ci + 1
+        END
+    END
+    LET songTitle = fullPath.substring(nameStart)
+
+    # Draw UI
+    CALL drawUI WITH songTitle, cur, total, isNowPlaying, trackIndex, trackCount, volume
+
+    # Draw playlist rows (up to visibleRows, centred on current track)
+    LET startRow = trackIndex - 1
+    IF startRow < 0 THEN
+        LET startRow = 0
+    END
+    IF startRow + visibleRows > trackCount THEN
+        LET startRow = trackCount - visibleRows
+    END
+    IF startRow < 0 THEN
+        LET startRow = 0
+    END
+
+    ITER 0 TO visibleRows - 1 WITH ri
+        LET ti = startRow + ri
+        IF ti < trackCount THEN
+            LET fp2  = STRING(tracks.get(ti))
+            LET ns2  = 0
+            LET pl2  = fp2.length
+            ITER 0 TO pl2 - 1 WITH ci2
+                LET ch2 = fp2.charAt(ci2)
+                IF ch2.equals("/") THEN
+                    LET ns2 = ci2 + 1
+                END
+            END
+            LET rowName = fp2.substring(ns2)
+            LET isCur   = false
+            IF ti == trackIndex THEN
+                LET isCur = true
+            END
+            CALL drawTrackRow WITH ri, rowName, isCur
+        END
+    END
+
+    # Auto-advance when track ends
+    IF isNowPlaying == false THEN
+        IF playing THEN
+            # song just ended
+            LET nextIdx = trackIndex + 1
+            IF nextIdx >= trackCount THEN
+                LET nextIdx = 0
+            END
+            CALL loadTrack WITH nextIdx
+        END
+    END
+
+    # Mouse input
+    LET mp  = MOUSEPOS()
+    LET mx  = mp.get(0)
+    LET my  = mp.get(1)
+    LET btn = ISDOWN("MouseLeft")
+
+    IF btn THEN
+        IF lastMouse == false THEN
+            LET lastMouse = true
+
+            # Progress bar click → seek
+            LET onBar = CALL inRect WITH mx, my, 20, 132, 740, 26
+            IF onBar THEN
+		Audio.pause()
+		SLEEP 100
+                LET frac    = CALL barFraction WITH mx
+                LET seekSec = frac * total
+                Audio.seek(seekSec)
+		Audio.play()
+            END
+
+            LET onVBar = CALL inRect WITH mx, my, 640, 210, 100, 20
+            IF onVBar THEN
+		Audio.pause()
+		SLEEP 100
+                LET frac    = CALL VbarFraction WITH mx
+                volume = frac
+                Audio.setVolume(volume)
+		Audio.play()
+            END
+
+            # Previous
+            LET onPrev = CALL inRect WITH mx, my, 175, 200, 70, 42
+            IF onPrev THEN
+		Audio.pause()
+		SLEEP 100
+                LET prevIdx = trackIndex - 1
+                CALL loadTrack WITH prevIdx
+		Audio.play()
+            END
+
+            # Seek back 10s
+            LET onBack = CALL inRect WITH mx, my, 260, 200, 70, 42
+            IF onBack THEN
+                Audio.pause()
+		SLEEP 100
+		LET newT = cur - 10
+                IF newT < 0 THEN
+                    LET newT = 0
+                END
+                Audio.seek(newT)
+		Audio.play()
+            END
+
+            # Play / Pause
+            LET onPlay = CALL inRect WITH mx, my, 345, 196, 90, 50
+            IF onPlay THEN
+                IF isNowPlaying THEN
+                    Audio.pause()
+                    LET playing = false
+                ELSE
+                    Audio.play()
+                    LET playing = true
+                END
+            END
+
+            # Seek forward 10s
+            LET onFwd = CALL inRect WITH mx, my, 450, 200, 70, 42
+            IF onFwd THEN
+		Audio.pause()
+		SLEEP 100
+                LET newT2 = cur + 10
+                IF total > 0 THEN
+                    IF newT2 > total THEN
+                        LET newT2 = total - 1
+                    END
+                END
+                Audio.seek(newT2)
+		Audio.play()
+            END
+
+            # Next
+            LET onNext = CALL inRect WITH mx, my, 535, 200, 70, 42
+            IF onNext THEN
+		Audio.pause()
+		SLEEP 100
+                LET nextIdx2 = trackIndex + 1
+                CALL loadTrack WITH nextIdx2
+		Audio.play()
+            END
+
+        END
+    ELSE
+        LET lastMouse = false
+    END
+
+    # Escape → quit
+    IF ISDOWN("Escape") THEN
+        LET running = false
+    END
+
+    IF ISDOWN("Control") AND ISDOWN("c") THEN
+	LET running = false
+	PRINT dddd
+    END
+
+    IF ISDOWN("Control") AND ISDOWN("z") THEN
+	RETURN
+    END
+
+    SLEEP frameMs
+
+END
+
+Audio.pause()
+#GCLOSE

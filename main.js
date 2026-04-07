@@ -5564,6 +5564,50 @@ function __woplAdd(a, b) {
 }
 `;
 
+let DEBUG = true;
+
+class JSBuilder {
+    constructor() { this.lines = []; }
+    append(codeLine, wplLineNumber = null, moduleName = null) {
+        if (wplLineNumber !== null && DEBUG) {
+            this.lines.push(`// WPL ${moduleName}:${wplLineNumber}`);
+        }
+        this.lines.push(codeLine);
+    }
+    toString() { return this.lines.join("\n"); }
+}
+
+function wplFindErrLine(err, js){
+    try {
+    const stack = err.stack;
+    let match = stack.match(/<anonymous>:(\d+):(\d+)/);
+    if (match) {
+        const line = parseInt(match[1], 10);
+        const col  = parseInt(match[2], 10);
+        // continue parsing js line:
+        const jsLines = js.split("\n");
+        const errorLine = jsLines[line - 1 -3 /* somehow need to go two more lines up to fix js <anonymous>:line alignment*/];
+
+        match = errorLine.match(/\/\/ WPL (\w+):(\d+)/);
+        if (match) {
+            const module = match[1];
+            const wplLine = Number(match[2]);
+            if(!module || !wplLine){ 
+                return ["not found","not found"]; 
+            }
+            return [wplLine+1 /* +1, due to #wpl prefix at top of wpl file that is removed when compiling/running */, module];
+        } else { return null; }
+    } else {
+        console.log("Couldn't find anonymous line in stack");
+        return null;
+    }
+    console.error(err);
+} catch(e){
+    console.error("Error while parsing stack trace:", e);
+    return null;
+}
+}
+
 // ──────────────────────────────────────────────────────────────
 //  Main compiler class
 // ──────────────────────────────────────────────────────────────
@@ -5647,7 +5691,7 @@ class WOPLCOMPJS {
             
             // Compile the module
             //console.log(`[IMPORT] Compiling module: ${modulePath}.wpl`);
-            let moduleJS = await moduleCompiler.compile(sourceCode, true);
+            let moduleJS = await moduleCompiler.compile(sourceCode, true, modulePath);
             //console.log(moduleJS.functions);
             moduleCompiler.functions.forEach(func => this.functions.add(func)); // add imported functions to main compiler's function set
             moduleCompiler.classes.forEach(cls => this.classes.add(cls)); // add imported classes to main compiler's class set
@@ -5667,15 +5711,16 @@ class WOPLCOMPJS {
     }
 
     // ── compile ───────────────────────────────────────────────────
-    async compile(code, isModule=false) {
+    async compile(code, isModule=false, moduleName="main") {
         this.reset();
 
         const lines = code.split("\n");
-        let js = ""
+        //let js = ""
+        const js = new JSBuilder();
         if(!isModule){
-            js += "return (async () => {\n" + WOPL_RUNTIME + "\n" + WOPL_ADD_HELPER + "\n";
+            js.append("return (async () => {\n" + WOPL_RUNTIME + "\n" + WOPL_ADD_HELPER + "\n", null, null);
             // make arguments ready
-            js += "args = new WOPLArray(args)\nargc = args.length\n";
+            js.append("args = new WOPLArray(args)\nargc = args.length\n", null, null);
             this.indentLevel = 1;
         }
 
@@ -5701,7 +5746,7 @@ class WOPLCOMPJS {
                     this.currentParent = tokens[3].value;
                     parentStr = ` extends ${tokens[3].value}`;
                 }
-                js += `${this.indent()}class ${name}${parentStr} {\n`;
+                js.append(`${this.indent()}class ${name}${parentStr} {\n`, i, moduleName);
                 this._pushScope();
                 this.indentLevel++;
                 continue;
@@ -5711,7 +5756,7 @@ class WOPLCOMPJS {
             if (firstKW === "END" && tokens[1]?.value === "CLASS") {
                 this._popScope();
                 this.indentLevel--;
-                js += `${this.indent()}}\n`;
+                js.append(`${this.indent()}}\n`, i, moduleName);
                 this.inClass = null;
                 this.currentParent = null;
                 continue;
@@ -5737,7 +5782,7 @@ class WOPLCOMPJS {
                 // Constructors cannot be async in JS — calls to async user functions inside INIT
                 // will still work as fire-and-forget; for most WOPL use cases this is fine.
                 const asyncPrefix = (methodName === "constructor") ? "" : "async ";
-                js += `${this.indent()}${asyncPrefix}${methodName}(${params.join(", ")}) {\n`;
+                js.append(`${this.indent()}${asyncPrefix}${methodName}(${params.join(", ")}) {\n`, i, moduleName);
                 this._pushScope();
                 params.forEach(p => this._declare(p));
                 this.indentLevel++;
@@ -5756,7 +5801,7 @@ class WOPLCOMPJS {
             if (firstKW === "END" && tokens[1]?.value === "METHOD") {
                 this._popScope();
                 this.indentLevel--;
-                js += `${this.indent()}}\n`;
+                js.append(`${this.indent()}}\n`, i, moduleName);
                 this.inMethod = false;
                 this._needsAutoSuper = false;
                 continue;
@@ -5766,16 +5811,16 @@ class WOPLCOMPJS {
             if (firstKW === "FIELD") {
                 // Emit pending auto-super before first `this` access
                 if (this._needsAutoSuper) {
-                    js += `${this.indent()}super();\n`;
+                    js.append(`${this.indent()}super();\n`, i, moduleName);
                     this._needsAutoSuper = false;
                 }
                 // Use raw (original case) so field names like "step" aren't uppercased to "STEP"
                 const name = tokens[1].raw ?? tokens[1].value;
                 if (tokens[2]?.value === "=") {
                     const expr = this.parseExpr(tokens, 3);
-                    js += `${this.indent()}this.${name} = ${expr};\n`;
+                    js.append(`${this.indent()}this.${name} = ${expr};\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}this.${name} = null;\n`;
+                    js.append(`${this.indent()}this.${name} = null;\n`, i, moduleName);
                 }
                 continue;
             }
@@ -5794,7 +5839,7 @@ class WOPLCOMPJS {
                     }
                 }
                 this.functions.add(name);
-                js += `${this.indent()}async function ${name}(${params.join(", ")}) {\n`;
+                js.append(`${this.indent()}async function ${name}(${params.join(", ")}) {\n`, i, moduleName);
                 this._pushScope();
                 params.forEach(p => this._declare(p));
                 this.indentLevel++;
@@ -5805,14 +5850,14 @@ class WOPLCOMPJS {
             if (firstKW === "END") {
                 this._popScope();
                 this.indentLevel--;
-                js += `${this.indent()}}\n`;
+                js.append(`${this.indent()}}\n`, i, moduleName);
                 continue;
             }
 
             // ── RETURN ──────────────────────────────────────────
             if (firstKW === "RETURN") {
                 const expr = this.parseExpr(tokens, 1);
-                js += `${this.indent()}return ${expr};\n`;
+                js.append(`${this.indent()}return ${expr};\n`, i, moduleName);
                 continue;
             }
 
@@ -5821,7 +5866,7 @@ class WOPLCOMPJS {
                 // collect tokens between IF and THEN
                 const thenIdx = tokens.findIndex(t => t.value === "THEN");
                 const cond    = this.parseExpr(tokens.slice(1, thenIdx < 0 ? undefined : thenIdx));
-                js += `${this.indent()}if (${cond}) {\n`;
+                js.append(`${this.indent()}if (${cond}) {\n`, i, moduleName);
                 this._pushScope();
                 this.indentLevel++;
                 continue;
@@ -5832,7 +5877,7 @@ class WOPLCOMPJS {
                 const cond    = this.parseExpr(tokens.slice(1, thenIdx < 0 ? undefined : thenIdx));
                 this._popScope();
                 this.indentLevel--;
-                js += `${this.indent()}} else if (${cond}) {\n`;
+                js.append(`${this.indent()}} else if (${cond}) {\n`, i, moduleName);
                 this._pushScope();
                 this.indentLevel++;
                 continue;
@@ -5841,7 +5886,7 @@ class WOPLCOMPJS {
             if (firstKW === "ELSE") {
                 this._popScope();
                 this.indentLevel--;
-                js += `${this.indent()}} else {\n`;
+                js.append(`${this.indent()}} else {\n`, i, moduleName);
                 this._pushScope();
                 this.indentLevel++;
                 continue;
@@ -5851,7 +5896,7 @@ class WOPLCOMPJS {
             if (firstKW === "WHILE") {
                 const startIdx = tokens.findIndex(t => t.value === "START");
                 const cond     = this.parseExpr(tokens.slice(1, startIdx < 0 ? undefined : startIdx));
-                js += `${this.indent()}while (${cond}) {\n`;
+                js.append(`${this.indent()}while (${cond}) {\n`, i, moduleName);
                 this._pushScope();
                 this.indentLevel++;
                 continue;
@@ -5881,7 +5926,7 @@ class WOPLCOMPJS {
                 const endExpr   = this.parseExpr(endExprTokens);
 
                 const dir = stepExpr.trim().startsWith("-") ? ">=" : "<=";
-                js += `${this.indent()}for (let ${varName} = ${startExpr}; ${varName} ${dir} ${endExpr}; ${varName} += ${stepExpr}) {\n`;
+                js.append(`${this.indent()}for (let ${varName} = ${startExpr}; ${varName} ${dir} ${endExpr}; ${varName} += ${stepExpr}) {\n`, i, moduleName);
                 this._pushScope();
                 this._declare(varName);  // loop var is scoped to the loop
                 this.indentLevel++;
@@ -5894,7 +5939,7 @@ class WOPLCOMPJS {
                 const itemVar = tokens[1].value;
                 // skip IN
                 const arrExpr = this.parseExpr(tokens, 3);
-                js += `${this.indent()}for (let ${itemVar} of ${arrExpr}) {\n`;
+                js.append(`${this.indent()}for (let ${itemVar} of ${arrExpr}) {\n`, i, moduleName);
                 this._pushScope();
                 this._declare(itemVar);
                 this.indentLevel++;
@@ -5908,9 +5953,9 @@ class WOPLCOMPJS {
                 // everything after EXEC is the raw command (preserve original spacing)
                 const cmd     = tokens.slice(execIdx + 1).filter(t => t.type !== "EOL").map(t => t.raw).join(" ");
                 if (this._isDeclared(name)) {
-                    js += `${this.indent()}${name} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                    js.append(`${this.indent()}${name} = await wplenv.execCmd(\`${cmd}\`);\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}let ${name} = await wplenv.execCmd(\`${cmd}\`);\n`;
+                    js.append(`${this.indent()}let ${name} = await wplenv.execCmd(\`${cmd}\`);\n`, i, moduleName);
                     this._declare(name);
                 }
                 continue;
@@ -5930,9 +5975,9 @@ class WOPLCOMPJS {
                 }
 
                 if (this._isDeclared(name)) {
-                    js += `${this.indent()}${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`;
+                    js.append(`${this.indent()}${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}let ${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`;
+                    js.append(`${this.indent()}let ${name} = await wplenv.waitForUserInput(woplStr(${promptExpr}));\n`, i, moduleName);
                     this._declare(name);
                 }
                 continue;
@@ -5944,9 +5989,9 @@ class WOPLCOMPJS {
                 // skip '='
                 const expr = this.parseExpr(tokens, 3);
                 if (this._isDeclared(name)) {
-                    js += `${this.indent()}${name} = ${expr};\n`;
+                    js.append(`${this.indent()}${name} = ${expr};\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}let ${name} = ${expr};\n`;
+                    js.append(`${this.indent()}let ${name} = ${expr};\n`, i, moduleName);
                     this._declare(name);
                 }
                 continue;
@@ -5964,22 +6009,22 @@ class WOPLCOMPJS {
                 // this.x = expr
                 if (op === "=" && opType === "OP") {
                     const expr = this.parseExpr(tokens, 4);
-                    js += `${this.indent()}this.${field} = ${expr};\n`;
+                    js.append(`${this.indent()}this.${field} = ${expr};\n`, i, moduleName);
                     continue;
                 }
                 // this.x += expr  this.x -= expr  etc.
                 if (opType === "OP" && ["+=","-=","*=","/="].includes(op)) {
                     const expr = this.parseExpr(tokens, 4);
                     if (op === "+=") {
-                        js += `${this.indent()}this.${field} = __woplAdd(this.${field}, ${expr});\n`;
+                        js.append(`${this.indent()}this.${field} = __woplAdd(this.${field}, ${expr});\n`, i, moduleName);
                     } else {
-                        js += `${this.indent()}this.${field} ${op} ${expr};\n`;
+                        js.append(`${this.indent()}this.${field} ${op} ${expr};\n`, i, moduleName);
                     }
                     continue;
                 }
                 // this.x++  this.x--
                 if (opType === "OP" && (op === "++" || op === "--")) {
-                    js += `${this.indent()}this.${field}${op};\n`;
+                    js.append(`${this.indent()}this.${field}${op};\n`, i, moduleName);
                     continue;
                 }
             }
@@ -5990,10 +6035,10 @@ class WOPLCOMPJS {
                 const name = tokens[0].value;
                 const expr = this.parseExpr(tokens, 2);
                 if (this._isDeclared(name)) {
-                    js += `${this.indent()}${name} = ${expr};\n`;
+                    js.append(`${this.indent()}${name} = ${expr};\n`, i, moduleName);
                 } else {
                     // auto-declare in current scope (implicit declaration)
-                    js += `${this.indent()}let ${name} = ${expr};\n`;
+                    js.append(`${this.indent()}let ${name} = ${expr};\n`, i, moduleName);
                     this._declare(name);
                 }
                 continue;
@@ -6008,14 +6053,14 @@ class WOPLCOMPJS {
                 const expr = this.parseExpr(tokens, 2);
                 if (!this._isDeclared(name)) {
                     // auto-declare initialised to 0
-                    js += `${this.indent()}let ${name} = 0;\n`;
+                    js.append(`${this.indent()}let ${name} = 0;\n`, i, moduleName);
                     this._declare(name);
                 }
                 if (op === "+=") {
                     // use __woplAdd so string concatenation works
-                    js += `${this.indent()}${name} = __woplAdd(${name}, ${expr});\n`;
+                    js.append(`${this.indent()}${name} = __woplAdd(${name}, ${expr});\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}${name} ${op} ${expr};\n`;
+                    js.append(`${this.indent()}${name} ${op} ${expr};\n`, i, moduleName);
                 }
                 continue;
             }
@@ -6026,10 +6071,10 @@ class WOPLCOMPJS {
                 const name = tokens[0].value;
                 const op   = tokens[1].value;
                 if (!this._isDeclared(name)) {
-                    js += `${this.indent()}let ${name} = 0;\n`;
+                    js.append(`${this.indent()}let ${name} = 0;\n`, i, moduleName);
                     this._declare(name);
                 }
-                js += `${this.indent()}${name}${op};\n`;
+                js.append(`${this.indent()}${name}${op};\n`, i, moduleName);
                 continue;
             }
 
@@ -6044,7 +6089,7 @@ class WOPLCOMPJS {
                     const field   = tokens[3].value;
                     const toIdx   = tokens.findIndex(t => t.value === "TO");
                     const val     = this.parseExpr(tokens, toIdx + 1);
-                    js += `${this.indent()}${target}.${field} = ${val};\n`;
+                    js.append(`${this.indent()}${target}.${field} = ${val};\n`, i, moduleName);
                     continue;
                 }
 
@@ -6053,7 +6098,7 @@ class WOPLCOMPJS {
                 const toIdx  = tokens.findIndex(t => t.value === "TO");
                 const idx    = this.parseExpr(tokens.slice(atIdx + 1, toIdx));
                 const val    = this.parseExpr(tokens, toIdx + 1);
-                js += `${this.indent()}${target}.set(${idx}, ${val});\n`;
+                js.append(`${this.indent()}${target}.set(${idx}, ${val});\n`, i, moduleName);
                 continue;
             }
 
@@ -6073,7 +6118,7 @@ class WOPLCOMPJS {
                 }
                 if (cur.length) groups.push(cur);
                 for (const g of groups) {
-                    js += `${this.indent()}${arr}.push(${this.parseExpr(g)});\n`;
+                    js.append(`${this.indent()}${arr}.push(${this.parseExpr(g)});\n`, i, moduleName);
                 }
                 continue;
             }
@@ -6085,12 +6130,12 @@ class WOPLCOMPJS {
                     const fromIdx = tokens.findIndex(t => t.value === "FROM");
                     const idx     = this.parseExpr(tokens.slice(2, fromIdx));
                     const arr     = tokens[fromIdx + 1].value;
-                    js += `${this.indent()}${arr}.removeAt(${idx});\n`;
+                    js.append(`${this.indent()}${arr}.removeAt(${idx});\n`, i, moduleName);
                 } else {
                     const fromIdx = tokens.findIndex(t => t.value === "FROM");
                     const val     = this.parseExpr(tokens.slice(1, fromIdx));
                     const arr     = tokens[fromIdx + 1].value;
-                    js += `${this.indent()}${arr}.remove(${val});\n`;
+                    js.append(`${this.indent()}${arr}.remove(${val});\n`, i, moduleName);
                 }
                 continue;
             }
@@ -6103,7 +6148,7 @@ class WOPLCOMPJS {
                 // We allow the old space-separated form by inserting '+' between top-level tokens
                 const printTokens = tokens.slice(1, tokens.findIndex(t => t.type === "EOL"));
                 const expr        = this._parsePrintExpr(printTokens);
-                js += `${this.indent()}{ const __pv = ${expr}; console.log(woplStr(__pv)); wplenv.outputToTerminalImmediately(woplStr(__pv)); }\n`;
+                js.append(`${this.indent()}{ const __pv = ${expr}; console.log(woplStr(__pv)); wplenv.outputToTerminalImmediately(woplStr(__pv)); }\n`, i, moduleName);
                 continue;
             }
 
@@ -6122,7 +6167,7 @@ class WOPLCOMPJS {
                 const indentedCode = this.indentModule(importedCode, this.indentLevel);
 
                 // Prepend the imported module's compiled code
-                js += "\n" + indentedCode + "\n";
+                js.append("\n" + indentedCode + "\n", i, moduleName);
 
                 continue;
             }
@@ -6130,20 +6175,20 @@ class WOPLCOMPJS {
             // ── EXEC cmd  (no assignment) ─────────────────────────
             if (firstKW === "EXEC") {
                 const cmd = tokens.slice(1).filter(t => t.type !== "EOL").map(t => t.raw).join(" ");
-                js += `${this.indent()}await wplenv.execCmd(\`${cmd}\`);\n`;
+                js.append(`${this.indent()}await wplenv.execCmd(\`${cmd}\`);\n`, i, moduleName);
                 continue;
             }
 
             // ── SLEEP ─────────────────────────────────────────────
             if (firstKW === "SLEEP") {
                 const expr = this.parseExpr(tokens, 1);
-                js += `${this.indent()}await new Promise(r => setTimeout(r, ${expr}));\n`;
+                js.append(`${this.indent()}await new Promise(r => setTimeout(r, ${expr}));\n`, i, moduleName);
                 continue;
             }
 
             // ── BREAK / CONTINUE ─────────────────────────────────
-            if (firstKW === "BREAK")    { js += `${this.indent()}break;\n`;    continue; }
-            if (firstKW === "CONTINUE") { js += `${this.indent()}continue;\n`; continue; }
+            if (firstKW === "BREAK")    { js.append(`${this.indent()}break;\n`, i, moduleName);    continue; }
+            if (firstKW === "CONTINUE") { js.append(`${this.indent()}continue;\n`, i, moduleName); continue; }
 
             // ── SUPER ────────────────────────────────────────────
             // SUPER(args)  — explicit super call; cancels any pending auto-super
@@ -6153,9 +6198,9 @@ class WOPLCOMPJS {
                 if (tokens[1]?.value === "(" && tokens[1]?.type === "PUNCT") {
                     // parse arg list
                     const args = this._parseArgTokens(tokens, 2);
-                    js += `${this.indent()}super(${args.join(", ")});\n`;
+                    js.append(`${this.indent()}super(${args.join(", ")});\n`, i, moduleName);
                 } else {
-                    js += `${this.indent()}super();\n`;
+                    js.append(`${this.indent()}super();\n`, i, moduleName);
                 }
                 continue;
             }
@@ -6163,49 +6208,49 @@ class WOPLCOMPJS {
             // ── GRAPHICS ─────────────────────────────────────────
             if (firstKW === "GINIT") {
                 const args = this._parseArgTokens(tokens, 1);
-                if (args.length >= 2) js += `${this.indent()}Modules.gfx.init(${args[0]}, ${args[1]});\n`;
-                else                  js += `${this.indent()}Modules.gfx.init(800, 600);\n`;
+                if (args.length >= 2) js.append(`${this.indent()}Modules.gfx.init(${args[0]}, ${args[1]});\n`, i, moduleName);
+                else                  js.append(`${this.indent()}Modules.gfx.init(800, 600);\n`, i, moduleName);
                 continue;
             }
-            if (firstKW === "GCLOSE") { js += `${this.indent()}Modules.gfx.close();\n`; continue; }
+            if (firstKW === "GCLOSE") { js.append(`${this.indent()}Modules.gfx.close();\n`, i, moduleName); continue; }
             if (firstKW === "GCLEAR") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.clear(${args[0] ?? '"#000000"'});\n`;
+                js.append(`${this.indent()}Modules.gfx.clear(${args[0] ?? '"#000000"'});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GPIXEL") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.drawPixel(${args[0]}, ${args[1]}, ${args[2] ?? '"#00ff00"'});\n`;
+                js.append(`${this.indent()}Modules.gfx.drawPixel(${args[0]}, ${args[1]}, ${args[2] ?? '"#00ff00"'});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GLINE") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.drawLine(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`;
+                js.append(`${this.indent()}Modules.gfx.drawLine(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GRECT") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.drawRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`;
+                js.append(`${this.indent()}Modules.gfx.drawRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'}, ${args[5] ?? 1});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GFRECT") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.fillRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'});\n`;
+                js.append(`${this.indent()}Modules.gfx.fillRect(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4] ?? '"#00ff00"'});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GCIRCLE") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.drawCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'}, ${args[4] ?? 1});\n`;
+                js.append(`${this.indent()}Modules.gfx.drawCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'}, ${args[4] ?? 1});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GFCIRCLE") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.fillCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'});\n`;
+                js.append(`${this.indent()}Modules.gfx.fillCircle(${args[0]}, ${args[1]}, ${args[2]}, ${args[3] ?? '"#00ff00"'});\n`, i, moduleName);
                 continue;
             }
             if (firstKW === "GTEXT") {
                 const args = this._parseArgTokens(tokens, 1);
-                js += `${this.indent()}Modules.gfx.drawText(${args[0]}, ${args[1]}, woplStr(${args[2]}), woplStr(${args[3] ?? '"#00ff00"'}), ${args[4] ?? 16});\n`;
+                js.append(`${this.indent()}Modules.gfx.drawText(${args[0]}, ${args[1]}, woplStr(${args[2]}), woplStr(${args[3] ?? '"#00ff00"'}), ${args[4] ?? 16});\n`, i, moduleName);
                 continue;
             }
 
@@ -6216,19 +6261,19 @@ class WOPLCOMPJS {
                 const expr = this.parseExpr(tokens, 0);
                 // only emit if it looks like a call (contains parentheses in output)
                 if (expr && expr !== "undefined") {
-                    js += `${this.indent()}await Promise.resolve(${expr});\n`;
+                    js.append(`${this.indent()}await Promise.resolve(${expr});\n`, i, moduleName);
                     continue;
                 }
             }
 
-            js += `${this.indent()}// Unknown: ${line}\n`;
+            js.append(`${this.indent()}// Unknown: ${line}\n`, i, moduleName);
         }
 
         this.indentLevel = 0;
         if(!isModule){
-            js += "})();\n";
+            js.append("})();\n", i, null);
         }
-        return js;
+        return js.toString();
     }
 
     // split comma-separated args (respecting parens) into expression strings
@@ -7515,6 +7560,7 @@ class FS {
         this.createEssentialFiles();
         this.moduleDirInit();
         this.wplModDIrInit();
+        this.propDirInit();
         this.binDirInit();
     }
 
@@ -7846,7 +7892,7 @@ class FS {
                 nodes.put({ type: "file", content: bytes }, existing.inode);
                 meta.put({ ...this._makeMeta("file", existing.inode), modified: now, accessed: now, size: bytes.byteLength }, existing.inode);
             });
-            return [true, ""];
+            return ["", true, ""];
         }
 
         // Create new file (same as createFile without the exists check)
@@ -7862,7 +7908,7 @@ class FS {
             dentries.put({ parent: parentInode, name, inode });
             meta.put(this._makeMeta("file", inode, { size: bytes.byteLength }), inode);
         });
-        return [true, ""];
+        return ["", true, ""];
     }
 
     async movePath(srcPath, destPath) {
@@ -8048,6 +8094,11 @@ class FS {
             const [files] = await this.listFiles(["modules", mod]);
             if (files.includes("autoload")) Loader.loadModule(mod);
         }
+    }
+
+    async propDirInit(){
+        // create if doesnt exist
+        await this.createDirectory(["prop"]);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -8291,6 +8342,54 @@ class OsCalls{
         let output = await filesystem.deleteFile(parsedPath, true);
 
         return ["Autoload disabled for module: "+modname, true, ""];
+    }
+    async getProp(prop){
+        console.log("Reading file");
+
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath("/prop/"+prop);
+        let output = await filesystem.readFile(parsed_path, false);
+        if(output[1] == false){
+            return [null /* prop not set */, true, ""];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    async setProp(prop, content){
+        console.log("Writing file");
+
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath("/prop/"+prop);
+        let output = await filesystem.writeFile(parsed_path, content/*.replace(/\\n/g, "\n")*/);
+        if(output[1] == false){
+            return ["", false, "Failed to set property: "+output[2]];
+        } else {
+            return [output[0], true, ""];
+        }
+    }
+    async unsetProp(prop){
+        console.log("Unsetting property");
+
+        if(!this.probeFSModule()){
+            this.panic10();
+            return ["", false, this.panicMessage10FS]
+        }
+
+        let parsed_path = filesystem.parsePath("/prop/"+prop);
+        let output = await filesystem.deleteFile(parsed_path, true);
+        if(output[1] == false){
+            return ["", false, "Failed to unset property: "+output[2]];
+        } else {
+            return ["Property "+prop+" unset successfully!", true, ""];
+        }
     }
 
 }
@@ -8839,6 +8938,13 @@ class Commands{
             return ["File is not executable!", "red", ""];
         }
 
+        let debugSet = await OS.getProp("debug");
+        if(debugSet[1] == true && debugSet[0] != null){
+            DEBUG = true;
+        } else {
+            DEBUG = false;
+        }
+
         //let wplcode = output[0].slice(1);
         let wplcode = output[0].split("\n").slice(1).join("\n");
 
@@ -8857,7 +8963,14 @@ class Commands{
             await runFn(wplenv, Modules, args); /* args is later converted to WOPLArray */
         } catch (err) {
             console.error("Error executing WPL code:", err);
-            return ["File executed with errors! Error: "+err.message, "red", ""];
+            let errLine = wplFindErrLine(err, js);
+            if(!errLine){
+                return ["File executed with errors! Error: "+err.message, "red", ""];
+            } else {
+                let line = errLine[0];
+                let modName = errLine[1];
+                return [`File executed with errors! JS Error: ${err.message}\nLine ${line} in module ${modName}`, "red", ""];
+            }
         }
         console.log("WPL code executed!!!!!!!!!!!!!!");
         
@@ -9068,6 +9181,47 @@ class Commands{
         }
 
     }
+
+    async setprop(args) {
+        if (!args[0]) {
+            return ["Usage: setProp <name> <value>", "yellow", ""];
+        }
+        let output = await OS.setProp(args[0], args[1]);
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            return [`Property ${args[0]} set to ${args[1]}`, "green", ""];
+        }
+
+    }
+
+    async getprop(args) {
+        if (!args[0]) {
+            return ["Usage: getProp <name>", "yellow", ""];
+        }
+        let output = await OS.getProp(args[0]);
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            if(output[0] === null){
+                return [`Property ${args[0]} is not set`, "yellow", ""];
+            } else {
+                return [`Property ${args[0]}: ${output[0]}`, "green", ""];
+            }
+        }
+    }
+
+    async unset(args) {
+        if (!args[0]) {
+            return ["Usage: unset <name>", "yellow", ""];
+        }
+        let output = await OS.unsetProp(args[0]);
+        if (output[1] == false) {
+            return [output[2], "red", ""];
+        } else {
+            return [`Property ${args[0]} unset`, "green", ""];
+        }
+    }
 }
 
 let filesystem = new FS();
@@ -9121,6 +9275,9 @@ class CommandManager {
             export: commands.export,
             import: commands.import,
             size: commands.size,
+            setprop: commands.setprop,
+            getprop: commands.getprop,
+            unset: commands.unset,
 
             // audio
             aload: commands.aload,
