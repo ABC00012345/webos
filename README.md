@@ -4,6 +4,8 @@ Hello, welcome to WebOS!
 
 This is a simple web-based operating system.
 
+https://abc00012345.github.io/webos/
+
 Commands:
 - ls:     List files in the current directory
 - cd:     Change directory
