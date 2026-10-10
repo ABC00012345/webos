@@ -11,6 +11,9 @@ let currentInputBeforeHistory = '';
 let editViewOpened = false;
 let oldCwd = "/";
 
+//// OS JS PROPS
+let DEBUG_MODULES_IN_CONSOLE = true
+
 // disable console.log, improves speed by like 10x, espec. in wpl
 //console.log = function() {}
 
@@ -62,6 +65,9 @@ Commands:
 - export: export a file from WebOS and download it
 - import: import a file from your computer to WebOS
 - size: show the size of a file or directory
+- setprop: set a property in the system
+- getprop: get a property from the system
+- sleep: sleep for a specified number of milliseconds
 
 Audio commands:
 - aload: load an audio file (supports mp3, wav, ogg)
@@ -73,6 +79,7 @@ Audio commands:
 Important information:
 - autoload modules: create a file named autoload in directory /modules/<modulename>/
 - files of the webos programming language need to start with #wpl to be executable, just like #script for normal scripts
+- to  enable debug mode for wpl language run command: 'setptop debug 1'
 
 More coming soon!!
 
@@ -603,7 +610,16 @@ WHILE running START
 END
 
 Audio.pause()
-#GCLOSE`
+#GCLOSE`,
+        "sleep" : `#wpl
+        IF argc < 2 THEN
+            PRINT "Usage: sleep <msecs>"
+            RETURN
+        END
+        LET MSECS = args[1]
+        SLEEP MSECS
+
+        `
     }
     static wplModules = {
         "audio.wpl" : `#wpl
@@ -786,7 +802,7 @@ class AudioPlayer {
 }
 
 // only works in console for now
-class YTPlayer {
+/*class YTPlayer {
   static apiReadyPromise = null;
 
   static loadAPI() {
@@ -881,34 +897,34 @@ class YTPlayer {
     }
 
     async play(input) {
-    if (!input) throw new Error("play() requires a video ID or URL");
-    await this.readyPromise;
+        if (!input) throw new Error("play() requires a video ID or URL");
+        await this.readyPromise;
 
-    const videoId = this.getVideoId(input);
-    const playlistId = this.getPlaylistId(input);
-    const indexMatch = typeof input === "string" ? input.match(/[?&]index=(\d+)/) : null;
-    const index = indexMatch ? parseInt(indexMatch[1], 10) : 0;
+        const videoId = this.getVideoId(input);
+        const playlistId = this.getPlaylistId(input);
+        const indexMatch = typeof input === "string" ? input.match(/[?&]index=(\d+)/) : null;
+        const index = indexMatch ? parseInt(indexMatch[1], 10) : 0;
 
-    if (playlistId && videoId) {
-        // Load video + attach playlist context so next/previous work
-        this.player.loadVideoById({
-        videoId,
-        list: playlistId,
-        listType: "playlist",
-        index,
-        });
-    } else if (playlistId) {
-        // Playlist URL without explicit video ID
-        this.player.loadPlaylist({
-        listType: "playlist",
-        list: playlistId,
-        index,
-        });
-    } else if (videoId) {
-        this.player.loadVideoById(videoId);
-    } else {
-        throw new Error("Could not extract video or playlist ID from: " + input);
-    }
+        if (playlistId && videoId) {
+            // Load video + attach playlist context so next/previous work
+            this.player.loadVideoById({
+            videoId,
+            list: playlistId,
+            listType: "playlist",
+            index,
+            });
+        } else if (playlistId) {
+            // Playlist URL without explicit video ID
+            this.player.loadPlaylist({
+            listType: "playlist",
+            list: playlistId,
+            index,
+            });
+        } else if (videoId) {
+            this.player.loadVideoById(videoId);
+        } else {
+            throw new Error("Could not extract video or playlist ID from: " + input);
+        }
     }
 
   async togglePlay() {
@@ -966,8 +982,364 @@ class YTPlayer {
   isPlaying() {
     return this.ready && this.player.getPlayerState() === YT.PlayerState.PLAYING;
   }
+}*/
+class YTPlayer {
+  static apiReadyPromise = null;
+
+  static loadAPI() {
+    if (window.YT?.Player) return Promise.resolve();
+
+    if (!YTPlayer.apiReadyPromise) {
+      YTPlayer.apiReadyPromise = new Promise((resolve, reject) => {
+        const previousCallback = window.onYouTubeIframeAPIReady;
+
+        window.onYouTubeIframeAPIReady = () => {
+          try {
+            previousCallback?.();
+          } finally {
+            resolve();
+          }
+        };
+
+        let script = document.querySelector(
+          'script[src="https://www.youtube.com/iframe_api"]'
+        );
+
+        if (!script) {
+          script = document.createElement("script");
+          script.src = "https://www.youtube.com/iframe_api";
+          script.onerror = () =>
+            reject(new Error("Failed to load YouTube IFrame API"));
+          document.head.appendChild(script);
+        }
+      });
+    }
+
+    return YTPlayer.apiReadyPromise;
+  }
+
+  constructor(containerId = "yt-player-hidden") {
+    this.player = null;
+    this.ready = false;
+    this.containerId = containerId;
+    this.currentPlaylistId = null;
+
+    this.readyPromise = new Promise((resolve, reject) => {
+      this._resolveReady = resolve;
+      this._rejectReady = reject;
+    });
+
+    let el = document.getElementById(containerId);
+
+    if (!el) {
+      el = document.createElement("div");
+      el.id = containerId;
+
+      Object.assign(el.style, {
+        position: "fixed",
+        left: "-10000px",
+        top: "0",
+        width: "200px",
+        height: "200px",
+        pointerEvents: "none",
+      });
+
+      document.body.appendChild(el);
+    }
+
+    YTPlayer.loadAPI()
+      .then(() => {
+        this.player = new YT.Player(containerId, {
+          width: "200",
+          height: "200",
+          playerVars: {
+            playsinline: 1,
+            autoplay: 0,
+          },
+          events: {
+            onReady: () => {
+              this.ready = true;
+              this._resolveReady();
+            },
+            onError: (e) => {
+  console.error("YouTube Player error:", e.data);
+
+  // 101 and 150: embedding is not allowed.
+  // 100: video unavailable or removed.
+  if ([100, 101, 150].includes(e.data)) {
+    this.skipUnavailableVideo();
+  }
+},
+            onStateChange: (e) => {
+              if (e.data === YT.PlayerState.ENDED) {
+                console.log("Video ended");
+              }
+            },
+          },
+        });
+      })
+      .catch(this._rejectReady);
+  }
+
+  getVideoId(input) {
+    if (typeof input !== "string" || !input.trim()) return null;
+
+    input = input.trim();
+
+    if (/^[a-zA-Z0-9_-]{11}$/.test(input)) {
+      return input;
+    }
+
+    try {
+      const url = new URL(
+        input.startsWith("www.") ? `https://${input}` : input
+      );
+
+      const host = url.hostname.replace(/^www\./, "");
+      let id = null;
+
+      if (host === "youtu.be") {
+        id = url.pathname.split("/").filter(Boolean)[0];
+      } else if (
+        host === "youtube.com" ||
+        host === "m.youtube.com" ||
+        host === "music.youtube.com" ||
+        host === "youtube-nocookie.com"
+      ) {
+        if (url.pathname === "/watch") {
+          id = url.searchParams.get("v");
+        } else {
+          const match = url.pathname.match(
+            /^\/(?:embed|shorts|live)\/([^/]+)/
+          );
+          id = match?.[1] ?? null;
+        }
+      }
+
+      return id && /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  
+    getPlaylistId(input) {
+    if (typeof input !== "string") return null;
+
+    try {
+        const url = new URL(
+        input.startsWith("www.") ? `https://${input}` : input
+        );
+
+        return url.searchParams.get("list") || null;
+    } catch {
+        return input.match(/[?&]list=([^&]+)/)?.[1] || null;
+    }
+    }
+
+
+  getPlaylistIndex(input) {
+    if (typeof input !== "string") return 0;
+
+    try {
+      const url = new URL(
+        input.startsWith("www.") ? `https://${input}` : input
+      );
+
+      const index = Number.parseInt(url.searchParams.get("index"), 10);
+
+      // YouTube playlist URL indices are generally 1-based.
+      return Number.isFinite(index) && index > 0 ? index - 1 : 0;
+    } catch {
+      return 0;
+    }
+  }
+   
+async play(input) {
+  if (typeof input !== "string" || !input.trim()) {
+    throw new Error("play() requires a video ID or URL");
+  }
+
+  await this.readyPromise;
+
+  const videoId = this.getVideoId(input);
+  const playlistId = this.getPlaylistId(input);
+  const index = this.getPlaylistIndex(input);
+
+  if (playlistId) {
+    this.currentPlaylistId = playlistId;
+
+    // Works with RD radio mixes as well as regular playlists.
+    this.player.loadPlaylist({
+      listType: "playlist",
+      list: playlistId,
+      index: videoId ? 0 : index,
+    });
+
+    if (videoId) {
+      this._selectVideoInPlaylist(videoId, index);
+    }
+  } else if (videoId) {
+    this.currentPlaylistId = null;
+    this.player.loadVideoById(videoId);
+  } else {
+    throw new Error("Could not extract a valid video or playlist ID");
+  }
 }
- 
+
+
+
+
+  async _selectVideoInPlaylist(videoId, fallbackIndex) {
+    await this.readyPromise;
+
+    // Wait for YouTube to populate the playlist.
+    const deadline = Date.now() + 10000;
+
+    while (Date.now() < deadline) {
+      const playlist = this.player.getPlaylist();
+
+      if (playlist?.length) {
+        const index = playlist.indexOf(videoId);
+
+        this.player.playVideoAt(
+          index >= 0 ? index : fallbackIndex
+        );
+
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    console.warn("Playlist did not load in time:", videoId);
+  }
+
+  async togglePlay() {
+    await this.readyPromise;
+
+    if (this.player.getPlayerState() === YT.PlayerState.PLAYING) {
+      this.player.pauseVideo();
+    } else {
+      this.player.playVideo();
+    }
+  }
+
+  async playVideo() {
+    await this.readyPromise;
+    this.player.playVideo();
+  }
+
+  async pause() {
+    await this.readyPromise;
+    this.player.pauseVideo();
+  }
+
+
+async next() {
+  await this.readyPromise;
+
+  const playlist = this.player.getPlaylist();
+
+  if (playlist?.length) {
+    this.player.nextVideo();
+  } else {
+    console.warn("No playlist is currently loaded.");
+  }
+}
+
+async previous() {
+  await this.readyPromise;
+
+  const playlist = this.player.getPlaylist();
+
+  if (playlist?.length) {
+    this.player.previousVideo();
+  } else {
+    console.warn("No playlist is currently loaded.");
+  }
+}
+
+async skipUnavailableVideo() {
+  if (this.skipInProgress) return;
+
+  this.skipInProgress = true;
+
+  try {
+    const playlist = this.player.getPlaylist();
+
+    if (!playlist?.length) {
+      console.warn("No playlist available to skip through.");
+      return;
+    }
+
+    if (this.skipAttempts >= this.maxSkipAttempts) {
+      console.warn("Stopped skipping after reaching the retry limit.");
+      return;
+    }
+
+    this.skipAttempts++;
+    const currentIndex = this.player.getPlaylistIndex();
+
+    if (currentIndex >= 0 && currentIndex < playlist.length - 1) {
+      this.player.nextVideo();
+    } else {
+      console.warn("No more videos in the currently loaded queue.");
+    }
+  } finally {
+    this.skipInProgress = false;
+  }
+}
+
+
+  async setVolume(v) {
+    await this.readyPromise;
+    this.player.setVolume(
+      Math.max(0, Math.min(100, Number(v) || 0))
+    );
+  }
+
+  async getVolume() {
+    await this.readyPromise;
+    return this.player.getVolume();
+  }
+
+  async getDuration() {
+    await this.readyPromise;
+    return this.player.getDuration();
+  }
+
+  async getCurrentTime() {
+    await this.readyPromise;
+    return this.player.getCurrentTime();
+  }
+
+  async seekTo(seconds) {
+    await this.readyPromise;
+    this.player.seekTo(Math.max(0, Number(seconds) || 0), true);
+  }
+
+  isPlaying() {
+    return (
+      this.ready &&
+      this.player?.getPlayerState() === YT.PlayerState.PLAYING
+    );
+  }
+
+  async getPlaylist() {
+    await this.readyPromise;
+    return this.player.getPlaylist() || [];
+  }
+
+  async destroy() {
+    if (this.player) {
+      this.player.destroy();
+      this.player = null;
+      this.ready = false;
+    }
+  }
+}
+
 // RANDOM
 class RandomUtils {
     // Returns a random integer between min and max (inclusive)
@@ -5588,15 +5960,17 @@ function wplFindErrLine(err, js){
         const jsLines = js.split("\n");
         const errorLine = jsLines[line - 1 -3 /* somehow need to go two more lines up to fix js <anonymous>:line alignment*/];
 
-        match = errorLine.match(/\/\/ WPL (\w+):(\d+)/);
+        //match = errorLine.match(/\/\/ WPL (\w+):(\d+)/);
+        match = errorLine.match(/\/\/ WPL ([\w/]+):(\d+)/);
         if (match) {
             const module = match[1];
             const wplLine = Number(match[2]);
+            console.log(`Error in module ${module} at WPL line ${wplLine+1}`);
             if(!module || !wplLine){ 
                 return ["not found","not found"]; 
             }
             return [wplLine+1 /* +1, due to #wpl prefix at top of wpl file that is removed when compiling/running */, module];
-        } else { return null; }
+        } else { console.log(`Error finding exact line! match: ${match}, errorLine: ${errorLine}`); return null; }
     } else {
         console.log("Couldn't find anonymous line in stack");
         return null;
@@ -7544,6 +7918,7 @@ class FS {
                 meta.put(1, "__nextIno"); // next free inode = 1
             });
             this._nextIno = 1;
+            await this.createFile(['.filesystem'], '');
         } else {
             this._nextIno = stored;
         }
@@ -9186,11 +9561,13 @@ class Commands{
         if (!args[0]) {
             return ["Usage: setProp <name> <value>", "yellow", ""];
         }
-        let output = await OS.setProp(args[0], args[1]);
+        let value = args[1] == undefined ? "" : args[1];
+        let output = await OS.setProp(args[0], value);
         if (output[1] == false) {
             return [output[2], "red", ""];
         } else {
-            return [`Property ${args[0]} set to ${args[1]}`, "green", ""];
+            if(value != "") value = " to "+value;
+            return [`Property ${args[0]} set${value}`, "green", ""];
         }
 
     }
@@ -9328,6 +9705,8 @@ class CommandManager {
 
 
 let commandManager = new CommandManager();
+
+if (DEBUG_MODULES_IN_CONSOLE) {window.Modules = Modules;}
 
 // test if command calling works from here
 /*
