@@ -41,10 +41,27 @@ Commands:
 - fetch: Save response data of server to file
 - run: executes a script
 - wpl: executes a file of the webos programming language
+- autoload: sets a module as autoload
+- unautoload: disables autoload for a module
+- oldwpl: use old version of wpl programming language (not compatble with new version)
+- export: export a file from WebOS and download it
+- import: import a file from your computer to WebOS
+- size: show the size of a file or directory
+- setprop: set a property in the system
+- getprop: get a property from the system
+- sleep: sleep for a specified number of milliseconds
+
+Audio commands:
+- aload: load an audio file (supports mp3, wav, ogg)
+- aplay: play loaded audio
+- apause: pause audio
+- astats: show audio status (playing/paused, current time, duration)
+
 
 Important information:
-- autoload modules: create a file named autoload in directory /modules/\<modulename\>/
+- autoload modules: create a file named autoload in directory /modules/<modulename>/
 - files of the webos programming language need to start with #wpl to be executable, just like #script for normal scripts
+- to  enable debug mode for wpl language run command: 'setptop debug 1'
 
 More coming soon!!
 
